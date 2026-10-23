@@ -420,6 +420,21 @@ select.input-field {
   display: flex;
   align-items: center;
   gap: 10px;
+  touch-action: pan-y;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+  cursor: grab;
+  will-change: transform;
+}
+.toast.swiping { transition: none; }
+.toast.swipe-out {
+  transform: translateX(110%) !important;
+  opacity: 0;
+  pointer-events: none;
+}
+.toast.swipe-out-left {
+  transform: translateX(-110%) !important;
+  opacity: 0;
+  pointer-events: none;
 }
 .toast.success { border-left: 4px solid var(--success); }
 .toast.warn    { border-left: 4px solid var(--warn); }
@@ -433,7 +448,24 @@ select.input-field {
   font-weight: 700;
   cursor: pointer;
   white-space: nowrap;
+  flex-shrink: 0;
 }
+.toast-close {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--bg3);
+  border: none;
+  color: var(--text2);
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.toast-msg { flex: 1; }
 
 @keyframes toastIn {
   from { opacity: 0; transform: translateY(10px); }
@@ -510,12 +542,16 @@ select.input-field {
    ============================================================ */
 #screen-onboarding {
   min-height: 100vh;
+  height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
   padding: 32px 20px 40px;
+  padding-top: calc(32px + env(safe-area-inset-top));
   background: var(--bg);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .onboard-logo {
   width: 80px; height: 80px;
@@ -1754,18 +1790,73 @@ function showToast(msg, type = '', undoFn = null, duration = 4000) {
   const container = document.getElementById('toast-container');
   const t = document.createElement('div');
   t.className = `toast ${type}`;
+
   const span = document.createElement('span');
+  span.className = 'toast-msg';
   span.textContent = msg;
   t.appendChild(span);
+
   if (undoFn) {
     const btn = document.createElement('button');
     btn.className = 'toast-undo';
     btn.textContent = 'Annulla';
-    btn.addEventListener('click', () => { undoFn(); t.remove(); });
+    btn.addEventListener('click', () => { undoFn(); dismissToast(t, false); });
     t.appendChild(btn);
   }
+
+  // Pulsante X per chiudere
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'toast-close';
+  closeBtn.setAttribute('aria-label', 'Chiudi');
+  closeBtn.textContent = '×';
+  closeBtn.addEventListener('click', () => dismissToast(t, false));
+  t.appendChild(closeBtn);
+
+  // Swipe per chiudere (destra o sinistra)
+  let startX = 0;
+  let currentX = 0;
+  let isDragging = false;
+
+  t.addEventListener('touchstart', e => {
+    startX = e.touches[0].clientX;
+    isDragging = true;
+    t.classList.add('swiping');
+  }, { passive: true });
+
+  t.addEventListener('touchmove', e => {
+    if (!isDragging) return;
+    currentX = e.touches[0].clientX - startX;
+    t.style.transform = `translateX(${currentX}px)`;
+    t.style.opacity = Math.max(0, 1 - Math.abs(currentX) / 150);
+  }, { passive: true });
+
+  t.addEventListener('touchend', () => {
+    isDragging = false;
+    t.classList.remove('swiping');
+    if (Math.abs(currentX) > 80) {
+      // Swipe abbastanza lungo → chiudi
+      dismissToast(t, currentX > 0);
+    } else {
+      // Torna in posizione
+      t.style.transform = '';
+      t.style.opacity = '';
+    }
+    currentX = 0;
+  });
+
   container.appendChild(t);
-  setTimeout(() => { if (t.parentNode) t.remove(); }, duration);
+
+  let timeout = null;
+  if (duration > 0 && duration < 90000) {
+    timeout = setTimeout(() => dismissToast(t, false), duration);
+  }
+  t._dismissTimeout = timeout;
+}
+
+function dismissToast(t, rightDirection = true) {
+  if (t._dismissTimeout) clearTimeout(t._dismissTimeout);
+  t.classList.add(rightDirection ? 'swipe-out' : 'swipe-out-left');
+  setTimeout(() => { if (t.parentNode) t.remove(); }, 220);
 }
 
 // ============================================================
@@ -3480,34 +3571,40 @@ function getAudioCtx() {
 
 // Suono timer: bip continuo a due frequenze alternate, finché non chiamiamo stopAlarm()
 function startAlarmSound() {
-  stopAlarmSound(); // ferma eventuale precedente
+  stopAlarmSound();
   try {
     const ctx = getAudioCtx();
     if (!ctx) return;
 
-    // Pattern: 880Hz per 0.3s, pausa 0.1s, ripetuto ogni 0.8s
-    // Usiamo un loop che si auto-rischedula
     let beepCount = 0;
     function scheduleBeep() {
       if (!timerState.alarmPlaying) return;
-      const osc  = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.type = 'sine';
-      // Alterna tra 880 e 1100 Hz
-      osc.frequency.value = beepCount % 2 === 0 ? 880 : 1100;
-      const t = ctx.currentTime;
-      gain.gain.setValueAtTime(0, t);
-      gain.gain.linearRampToValueAtTime(0.7, t + 0.02);
-      gain.gain.setValueAtTime(0.7, t + 0.25);
-      gain.gain.linearRampToValueAtTime(0, t + 0.35);
-      osc.start(t);
-      osc.stop(t + 0.4);
+
+      // Due oscillatori sovrapposti per suono squillante e tagliente
+      const freqPairs = beepCount % 2 === 0
+        ? [1320, 1760]
+        : [1047, 1568];
+
+      freqPairs.forEach(freq => {
+        const osc  = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = 'square';
+        osc.frequency.value = freq;
+        const t0 = ctx.currentTime;
+        gain.gain.setValueAtTime(0, t0);
+        gain.gain.linearRampToValueAtTime(0.35, t0 + 0.01);
+        gain.gain.setValueAtTime(0.35, t0 + 0.2);
+        gain.gain.linearRampToValueAtTime(0, t0 + 0.28);
+        osc.start(t0);
+        osc.stop(t0 + 0.32);
+      });
+
       beepCount++;
-      // Prossimo beep dopo 0.7s
-      timerState.alarmTimeout = setTimeout(scheduleBeep, 700);
+      timerState.alarmTimeout = setTimeout(scheduleBeep, 580);
     }
+
     timerState.alarmPlaying = true;
     scheduleBeep();
   } catch(e) { /* silenzioso */ }

@@ -2,7 +2,7 @@
 // Service Worker — Registro Pesi
 // Versione cache: aggiornare quando cambiano i file
 // ============================================================
-const CACHE_NAME = 'registro-pesi-v1';
+const CACHE_NAME = 'registro-pesi-v2';
 const ASSETS = [
   './index.html',
   './manifest.json',

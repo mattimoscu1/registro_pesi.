@@ -240,6 +240,9 @@ html, body {
   display: flex;
   align-items: center;
   gap: 10px;
+  /* Forza il background opaco per coprire il contenuto sotto */
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 .page-header h1 {
   font-size: 17px;
@@ -250,6 +253,12 @@ html, body {
   font-size: 12px;
   color: var(--text2);
   margin-top: 2px;
+}
+/* Su mobile l'header NON è sticky — scorre con il contenuto */
+@media (max-width: 599px) {
+  .page-header {
+    position: relative;
+  }
 }
 
 .btn {
@@ -3447,11 +3456,15 @@ let timerState = {
   endTime: null,
   running: false,
   interval: null,
-  wakeLock: null
+  wakeLock: null,
+  alarmPlaying: false,
+  alarmTimeout: null
 };
 
 // AudioContext per suono compatibile iOS (deve partire da gesto utente)
 let audioCtx = null;
+let alarmOscillators = []; // oscillatori dell'allarme attivo
+let alarmGains = [];
 
 function getAudioCtx() {
   if (!audioCtx) {
@@ -3459,31 +3472,60 @@ function getAudioCtx() {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     } catch(e) { /* silenzioso */ }
   }
-  // Riprendi se sospeso (iOS)
   if (audioCtx && audioCtx.state === 'suspended') {
     audioCtx.resume().catch(() => {});
   }
   return audioCtx;
 }
 
-function playTimerSound() {
+// Suono timer: bip continuo a due frequenze alternate, finché non chiamiamo stopAlarm()
+function startAlarmSound() {
+  stopAlarmSound(); // ferma eventuale precedente
   try {
     const ctx = getAudioCtx();
     if (!ctx) return;
-    // Due beep distinti
-    [0, 0.4, 0.8].forEach(delay => {
+
+    // Pattern: 880Hz per 0.3s, pausa 0.1s, ripetuto ogni 0.8s
+    // Usiamo un loop che si auto-rischedula
+    let beepCount = 0;
+    function scheduleBeep() {
+      if (!timerState.alarmPlaying) return;
       const osc  = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.type = 'sine';
-      osc.frequency.value = 880;
-      gain.gain.setValueAtTime(0.6, ctx.currentTime + delay);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay + 0.3);
-      osc.start(ctx.currentTime + delay);
-      osc.stop(ctx.currentTime + delay + 0.35);
-    });
+      // Alterna tra 880 e 1100 Hz
+      osc.frequency.value = beepCount % 2 === 0 ? 880 : 1100;
+      const t = ctx.currentTime;
+      gain.gain.setValueAtTime(0, t);
+      gain.gain.linearRampToValueAtTime(0.7, t + 0.02);
+      gain.gain.setValueAtTime(0.7, t + 0.25);
+      gain.gain.linearRampToValueAtTime(0, t + 0.35);
+      osc.start(t);
+      osc.stop(t + 0.4);
+      beepCount++;
+      // Prossimo beep dopo 0.7s
+      timerState.alarmTimeout = setTimeout(scheduleBeep, 700);
+    }
+    timerState.alarmPlaying = true;
+    scheduleBeep();
   } catch(e) { /* silenzioso */ }
+}
+
+function stopAlarmSound() {
+  timerState.alarmPlaying = false;
+  if (timerState.alarmTimeout) {
+    clearTimeout(timerState.alarmTimeout);
+    timerState.alarmTimeout = null;
+  }
+}
+
+function playTimerSound() {
+  // Avvia suono continuo
+  startAlarmSound();
+  // Vibrazione continua
+  vibrate([300, 200, 300, 200, 300, 200, 300]);
 }
 
 async function acquireWakeLock() {
@@ -3520,21 +3562,36 @@ function updateTimerUI() {
   const fraction = timerState.totalSecs > 0 ? secs / timerState.totalSecs : 1;
   ring.style.strokeDashoffset = circumference * (1 - fraction);
 
-  if (timerState.running) {
+  if (timerState.alarmPlaying) {
+    status.textContent = '🔔 Tocca per fermare';
+    startBtn.textContent = '■';
+    startBtn.style.background = 'var(--danger)';
+  } else if (timerState.running) {
     status.textContent = 'In corso…';
     startBtn.textContent = '⏸';
+    startBtn.style.background = 'var(--accent)';
   } else if (secs === 0 && timerState.totalSecs > 0) {
     status.textContent = 'Tempo scaduto!';
     startBtn.textContent = '▶';
+    startBtn.style.background = 'var(--accent)';
   } else {
     status.textContent = 'Imposta il tempo';
     startBtn.textContent = '▶';
+    startBtn.style.background = 'var(--accent)';
   }
 }
 
 function startTimer() {
   // Attiva AudioContext dal gesto dell'utente
   getAudioCtx();
+
+  // Se l'allarme sta suonando, fermalo (l'utente ha sentito)
+  if (timerState.alarmPlaying) {
+    stopAlarmSound();
+    vibrate(0);
+    updateTimerUI();
+    return;
+  }
 
   if (timerState.running) {
     // Pausa
@@ -3551,7 +3608,6 @@ function startTimer() {
     timerState.remainingSecs = timerState.totalSecs;
   }
 
-  // Usa ora di fine per precisione anche con schermo bloccato
   timerState.endTime = Date.now() + timerState.remainingSecs * 1000;
   timerState.running = true;
   acquireWakeLock();
@@ -3566,15 +3622,16 @@ function startTimer() {
       timerState.endTime = null;
       releaseWakeLock();
       playTimerSound();
-      vibrate([200, 100, 200, 100, 400]);
       updateTimerUI();
-      showToast('⏰ Timer scaduto!', 'success', null, 5000);
+      showToast('⏰ Timer scaduto! Tocca ▶ per fermare il suono.', 'success', null, 99000);
     }
-  }, 250); // Polling frequente per accuratezza
+  }, 250);
 }
 
 function resetTimer() {
   clearInterval(timerState.interval);
+  stopAlarmSound();
+  try { vibrate(0); } catch(e) {}
   timerState.running = false;
   timerState.endTime = null;
   timerState.remainingSecs = timerState.totalSecs;
@@ -3652,7 +3709,7 @@ function renderImpostazioni() {
   // === Tema ===
   addSettingsSection(container, 'Aspetto', [
     (() => {
-      const row = createSettingsRow('🎨', 'bg-accent', 'Tema', '');
+      const row = createSettingsRow(SVG.palette, '#6c63ff', 'Tema', '');
       const themeOpts = document.createElement('div');
       themeOpts.className = 'theme-options';
       themeOpts.style.marginTop = '10px';
@@ -3677,7 +3734,7 @@ function renderImpostazioni() {
   // === Unità di misura ===
   addSettingsSection(container, 'Unità di misura', [
     (() => {
-      const row = createSettingsRow('⚖️', 'bg-success', 'Unità di misura', 'I pesi sono salvati in kg e convertiti a schermo');
+      const row = createSettingsRow(SVG.scale, '#4caf50', 'Unità di misura', 'I pesi sono salvati in kg e convertiti a schermo');
       const sel = document.createElement('select');
       sel.className = 'input-field';
       sel.style.cssText = 'width:auto;margin-top:10px;min-width:100px;';
@@ -3701,7 +3758,7 @@ function renderImpostazioni() {
   // === Notifiche ===
   addSettingsSection(container, 'Notifiche', [
     (() => {
-      const row = createSettingsRow('🔔', 'bg-warn', 'Notifiche di sistema', 'Avvisi quando è ora di aumentare il peso (se supportate)');
+      const row = createSettingsRow(SVG.bell, '#ff9800', 'Notifiche di sistema', 'Avvisi quando è ora di aumentare il peso (se supportate)');
       const tog = createToggle(store.settings.notificationsEnabled, async checked => {
         if (checked) {
           const granted = await requestNotificationPermission();
@@ -3722,7 +3779,7 @@ function renderImpostazioni() {
   // === Backup ===
   addSettingsSection(container, 'Backup e ripristino', [
     (() => {
-      const row = createSettingsRow('📤', 'bg-accent', 'Esporta profilo', '');
+      const row = createSettingsRow(SVG.upload, '#6c63ff', 'Esporta profilo', '');
       const desc = document.createElement('div');
       desc.className = 'text-sm text-muted';
       desc.style.margin = '6px 0 10px';
@@ -3736,7 +3793,7 @@ function renderImpostazioni() {
       return row;
     })(),
     (() => {
-      const row = createSettingsRow('📥', 'bg-success', 'Importa profilo', '');
+      const row = createSettingsRow(SVG.download, '#4caf50', 'Importa profilo', '');
       const desc = document.createElement('div');
       desc.className = 'text-sm text-muted';
       desc.style.margin = '6px 0 10px';
@@ -3758,7 +3815,7 @@ function renderImpostazioni() {
       return row;
     })(),
     (() => {
-      const row = createSettingsRow('⏰', 'bg-warn', 'Promemoria backup', '');
+      const row = createSettingsRow(SVG.clock, '#ff9800', 'Promemoria backup', '');
       const desc = document.createElement('div');
       desc.className = 'text-sm text-muted';
       desc.style.margin = '6px 0 10px';
@@ -3816,7 +3873,7 @@ function renderImpostazioni() {
   // === Supporto ===
   addSettingsSection(container, 'Supporto', [
     (() => {
-      const row = createSettingsRow('✉️', 'bg-accent', 'Contatta per supporto e proposte', 'Hai problemi o idee? Scrivimi!');
+      const row = createSettingsRow(SVG.mail, '#6c63ff', 'Contatta per supporto e proposte', 'Hai problemi o idee? Scrivimi!');
       const btn = document.createElement('a');
       btn.href = 'mailto:mattiamoscuzza739@gmail.com';
       btn.className = 'btn btn-secondary btn-full';
@@ -3831,7 +3888,7 @@ function renderImpostazioni() {
   // === Dati ===
   addSettingsSection(container, 'Dati', [
     (() => {
-      const row = createSettingsRow('�', 'bg-accent', 'Torna alla configurazione iniziale', 'Rivedi il tutorial e il disclaimer');
+      const row = createSettingsRow(SVG.reset, '#6c63ff', 'Torna alla configurazione iniziale', 'Rivedi il tutorial e il disclaimer');
       const btn = document.createElement('button');
       btn.className = 'btn btn-secondary btn-full';
       btn.style.marginTop = '10px';
@@ -3855,7 +3912,7 @@ function renderImpostazioni() {
       return row;
     })(),
     (() => {
-      const row = createSettingsRow('�🗑️', 'bg-danger', 'Elimina tutti i dati', 'Cancella il profilo e tutti gli allenamenti');
+      const row = createSettingsRow(SVG.trash, '#f44336', 'Elimina tutti i dati', 'Cancella il profilo e tutti gli allenamenti');
       const btn = document.createElement('button');
       btn.className = 'btn btn-danger btn-full';
       btn.style.marginTop = '10px';
@@ -3900,7 +3957,7 @@ function addSettingsSection(container, title, rows) {
   container.appendChild(sec);
 }
 
-function createSettingsRow(icon, bgClass, label, desc) {
+function createSettingsRow(svgPath, bgColor, label, desc) {
   const row = document.createElement('div');
   row.className = 'settings-row';
   row.style.flexDirection = 'column';
@@ -3912,8 +3969,8 @@ function createSettingsRow(icon, bgClass, label, desc) {
 
   const iconEl = document.createElement('div');
   iconEl.className = 'settings-row-icon';
-  iconEl.style.background = 'var(--bg3)';
-  iconEl.textContent = icon;
+  iconEl.style.cssText = `background:${bgColor};border-radius:10px;`;
+  iconEl.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${svgPath}</svg>`;
 
   const textEl = document.createElement('div');
   textEl.className = 'settings-row-text';
@@ -3933,6 +3990,20 @@ function createSettingsRow(icon, bgClass, label, desc) {
   row.appendChild(top);
   return row;
 }
+
+// SVG paths riutilizzabili
+const SVG = {
+  palette:  '<circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/>',
+  scale:    '<line x1="12" y1="3" x2="12" y2="21"/><path d="M3 9l9-7 9 7"/><path d="M5 21h14"/>',
+  bell:     '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
+  upload:   '<polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/>',
+  download: '<polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.11"/>',
+  clock:    '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  phone:    '<rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/>',
+  mail:     '<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>',
+  trash:    '<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>',
+  reset:    '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.95"/>',
+};
 
 function createToggle(checked, onChange) {
   const wrap = document.createElement('label');

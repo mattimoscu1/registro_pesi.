@@ -1855,6 +1855,12 @@ function showToast(msg, type = '', undoFn = null, duration = 4000) {
 
 function dismissToast(t, rightDirection = true) {
   if (t._dismissTimeout) clearTimeout(t._dismissTimeout);
+  // Se è il toast del timer che sta suonando, ferma suono e resetta
+  if (timerState && timerState.alarmPlaying) {
+    stopAlarmSound();
+    try { vibrate(0); } catch(e) {}
+    resetTimer();
+  }
   t.classList.add(rightDirection ? 'swipe-out' : 'swipe-out-left');
   setTimeout(() => { if (t.parentNode) t.remove(); }, 220);
 }
@@ -2149,42 +2155,61 @@ function computeProgressAlerts() {
     for (const ex of workout.exercises) {
       const every   = ex.progressEvery || 4;
       const repsMax = ex.repsMax || ex.reps || 1;
+      // Usa il giorno manuale se impostato, altrimenti conta sedute automaticamente
+      const currentDay = ex.progressCurrentDay || null;
 
       const sessions = store.sessions
         .filter(s => s.exercises.some(se => se.exerciseId === ex.id))
         .sort((a, b) => a.date - b.date);
-      if (sessions.length < every) continue;
 
-      const last = sessions.slice(-every);
+      let isReady = false;
+      let currentMax = 0;
 
-      // Tutte le serie di tutte le ultime N sedute devono avere reps >= repsMax
-      // E il peso deve essere lo stesso in tutte (non stai ancora aumentando)
-      const allSeriesAtMax = last.every(s => {
-        const se = s.exercises.find(e => e.exerciseId === ex.id);
-        if (!se || !se.sets || !se.sets.length) return false;
-        return se.sets.every(st => st.weight !== null && (st.reps || 0) >= repsMax);
-      });
+      if (currentDay !== null) {
+        // Modalità manuale: pronto se giorno corrente >= every
+        if (currentDay >= every && sessions.length > 0) {
+          const lastSess = sessions[sessions.length - 1];
+          const allAtMax = sessions.slice(-every).every(s => {
+            const se = s.exercises.find(e => e.exerciseId === ex.id);
+            if (!se || !se.sets || !se.sets.length) return false;
+            return se.sets.every(st => st.weight !== null && (st.reps || 0) >= repsMax);
+          });
+          if (allAtMax) {
+            currentMax = Math.max(...sessions.slice(-1)[0].exercises
+              .find(e => e.exerciseId === ex.id)?.sets.map(s => s.weight || 0) || [0]);
+            isReady = currentMax > 0;
+          }
+        }
+      } else {
+        // Modalità automatica: conta sedute consecutive
+        if (sessions.length < every) continue;
+        const last = sessions.slice(-every);
+        const allSeriesAtMax = last.every(s => {
+          const se = s.exercises.find(e => e.exerciseId === ex.id);
+          if (!se || !se.sets || !se.sets.length) return false;
+          return se.sets.every(st => st.weight !== null && (st.reps || 0) >= repsMax);
+        });
+        if (!allSeriesAtMax) continue;
+        const maxWeights = last.map(s => {
+          const se = s.exercises.find(e => e.exerciseId === ex.id);
+          if (!se || !se.sets.length) return 0;
+          return Math.max(...se.sets.map(st => st.weight || 0));
+        });
+        if (!maxWeights.every(w => w > 0 && w === maxWeights[0])) continue;
+        currentMax = maxWeights[0];
+        isReady = true;
+      }
 
-      if (!allSeriesAtMax) continue;
-
-      // Verifica anche che il peso sia rimasto costante (non hai già aumentato)
-      const maxWeights = last.map(s => {
-        const se = s.exercises.find(e => e.exerciseId === ex.id);
-        if (!se || !se.sets.length) return 0;
-        return Math.max(...se.sets.map(st => st.weight || 0));
-      });
-      const allSameWeight = maxWeights.every(w => w > 0 && w === maxWeights[0]);
-      if (!allSameWeight) continue;
-
-      const currentMax = maxWeights[0];
-      const suggested  = +(currentMax + (ex.increment || 2.5)).toFixed(4);
-      progressAlerts.push({
-        exerciseName: ex.name,
-        currentKg: currentMax,
-        suggestedKg: suggested,
-        exerciseId: ex.id,
-        repsMax
-      });
+      if (isReady && currentMax > 0) {
+        const suggested = +(currentMax + (ex.increment || 2.5)).toFixed(4);
+        progressAlerts.push({
+          exerciseName: ex.name,
+          currentKg: currentMax,
+          suggestedKg: suggested,
+          exerciseId: ex.id,
+          repsMax
+        });
+      }
     }
   }
 }
@@ -2433,9 +2458,11 @@ function renderExerciseCard(ex, exIdx, session) {
   meta.className = 'exercise-meta';
   const repsMin = ex.repsMin || ex.reps || 1;
   const repsMax = ex.repsMax || ex.reps || repsMin;
+  const isStatic = ex.type === 'static';
+  const unit = isStatic ? 'sec' : 'rip.';
   meta.textContent = repsMin === repsMax
-    ? `${ex.sets}×${repsMax}`
-    : `${ex.sets}×${repsMin}–${repsMax}`;
+    ? `${ex.sets}×${repsMax}${unit}`
+    : `${ex.sets}×${repsMin}–${repsMax}${unit}`;
 
   const chev = document.createElement('span');
   chev.className = 'exercise-chevron';
@@ -2459,6 +2486,20 @@ function renderExerciseCard(ex, exIdx, session) {
   if (isOpen) {
     const body = document.createElement('div');
     body.className = 'exercise-body';
+
+    // Nota setup (configurata nel Setup Giornate) — sempre visibile
+    if (ex.setupNote && ex.setupNote.trim()) {
+      const setupNoteEl = document.createElement('div');
+      setupNoteEl.className = 'exercise-note';
+      setupNoteEl.style.borderLeftColor = 'var(--accent-light)';
+      setupNoteEl.style.marginTop = '10px';
+      const setupNoteLabel = document.createElement('div');
+      setupNoteLabel.className = 'exercise-note-prev';
+      setupNoteLabel.textContent = '📋 Nota esercizio';
+      setupNoteEl.textContent = ex.setupNote;
+      body.appendChild(setupNoteLabel);
+      body.appendChild(setupNoteEl);
+    }
 
     // Nota della seduta precedente
     const prevNote = getPreviousNote(ex.id);
@@ -2544,12 +2585,14 @@ function renderSeriesRow(ex, setIdx, setData, lastW, session) {
   // Badge reps effettive (solo se la serie è stata salvata)
   const repsMin = ex.repsMin || ex.reps || 1;
   const repsMax = ex.repsMax || ex.reps || repsMin;
+  const isStatic = ex.type === 'static';
+  const repsUnit = isStatic ? 'sec' : 'rip.';
   if (currentW !== null && setData && setData.reps != null) {
     const repsBadge = document.createElement('span');
     const atMax = setData.reps >= repsMax;
     repsBadge.className = `reps-badge ${atMax ? 'at-max' : 'below'}`;
-    repsBadge.textContent = `${setData.reps} rip.`;
-    repsBadge.title = atMax ? 'Reps massime raggiunte!' : `Obiettivo: ${repsMax} rip.`;
+    repsBadge.textContent = `${setData.reps} ${repsUnit}`;
+    repsBadge.title = atMax ? `${isStatic ? 'Tempo massimo' : 'Reps massime'} raggiunte!` : `Obiettivo: ${repsMax} ${repsUnit}`;
     display.appendChild(document.createTextNode(' '));
     display.appendChild(repsBadge);
   } else {
@@ -2557,7 +2600,9 @@ function renderSeriesRow(ex, setIdx, setData, lastW, session) {
     const rangeLabel = document.createElement('span');
     rangeLabel.className = 'weight-unit';
     rangeLabel.style.fontSize = '11px';
-    rangeLabel.textContent = repsMin === repsMax ? ` ${repsMax} rip.` : ` ${repsMin}–${repsMax} rip.`;
+    rangeLabel.textContent = repsMin === repsMax
+      ? ` ${repsMax} ${repsUnit}`
+      : ` ${repsMin}–${repsMax} ${repsUnit}`;
     display.appendChild(rangeLabel);
   }
 
@@ -2647,7 +2692,10 @@ function openNumpad(ex, setIdx, prefillKg, session) {
   // Reps
   const repsRange = document.getElementById('numpad-reps-range');
   const repsInput = document.getElementById('numpad-reps-input');
-  repsRange.textContent = `(range: ${repsMin}–${repsMax})`;
+  const isStaticEx = ex.type === 'static';
+  const repsLabel = isStaticEx ? 'Secondi effettivi:' : 'Reps effettive:';
+  document.querySelector('#numpad-reps-row label').textContent = repsLabel;
+  repsRange.textContent = `(${isStaticEx ? 'range sec' : 'range'}: ${repsMin}–${repsMax})`;
   repsInput.value = currentReps;
   repsInput.min = repsMin;
   repsInput.max = repsMax;
@@ -2774,6 +2822,33 @@ function recomputePR(exerciseId) {
   } else {
     delete store.prRecords[exerciseId];
   }
+  saveStore();
+}
+
+// Ricalcola TUTTI i PR (chiamata all'avvio per sanificare dati errati)
+function recomputeAllPRs() {
+  const allExIds = store.workouts.flatMap(w => w.exercises.map(e => e.id));
+  // Includi anche esercizi che potrebbero essere stati rimossi ma hanno sedute
+  const sessionExIds = [...new Set(store.sessions.flatMap(s => s.exercises.map(e => e.exerciseId)))];
+  const allIds = [...new Set([...allExIds, ...sessionExIds])];
+  allIds.forEach(id => {
+    // ricalcola senza salvare ogni volta (salviamo una volta sola dopo)
+    let maxW = 0, maxDate = 0;
+    for (const s of store.sessions) {
+      for (const se of s.exercises) {
+        if (se.exerciseId !== id) continue;
+        for (const st of se.sets) {
+          if (st.weight !== null && st.weight > maxW) {
+            maxW = st.weight;
+            maxDate = s.date;
+          }
+        }
+      }
+    }
+    if (maxW > 0) store.prRecords[id] = { weight: maxW, date: maxDate };
+    else delete store.prRecords[id];
+  });
+  saveStore();
 }
 
 // ============================================================
@@ -2877,11 +2952,13 @@ function renderWorkoutCard(wk) {
     const newEx = {
       id: uid(),
       name: '',
+      type: 'normal', // 'normal' | 'static' (plank ecc.)
       sets: 3,
       repsMin: 8,
       repsMax: 12,
       increment: 2.5,
-      progressEvery: 4
+      progressEvery: 4,
+      setupNote: ''
     };
     wk.exercises.push(newEx);
     saveStore();
@@ -2958,12 +3035,52 @@ function renderExerciseSetupRow(ex, wk) {
   }
 
   params.appendChild(makeParam('SERIE', 'sets', 1, 1));
-  params.appendChild(makeParam('REPS MIN', 'repsMin', 1, 1));
-  params.appendChild(makeParam('REPS MAX', 'repsMax', 1, 1));
-  params.appendChild(makeParam(`+KG`, 'increment', 0, 0.5));
-  params.appendChild(makeParam('PROG.', 'progressEvery', 1, 1));
 
+  // Mostra parametri diversi in base al tipo
+  const isStatic = (ex.type === 'static');
+  if (!isStatic) {
+    params.appendChild(makeParam('REPS MIN', 'repsMin', 1, 1));
+    params.appendChild(makeParam('REPS MAX', 'repsMax', 1, 1));
+    params.appendChild(makeParam(`+KG`, 'increment', 0, 0.5));
+  } else {
+    // Statico: secondi min / secondi max
+    params.appendChild(makeParam('SEC MIN', 'repsMin', 1, 5));
+    params.appendChild(makeParam('SEC MAX', 'repsMax', 1, 5));
+    params.appendChild(makeParam(`+KG`, 'increment', 0, 0.5));
+  }
+  params.appendChild(makeParam('PROG.', 'progressEvery', 1, 1));
   row.appendChild(params);
+
+  // Toggle tipo esercizio (normale / statico)
+  const typeRow = document.createElement('div');
+  typeRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:8px;';
+  const typeLabel = document.createElement('span');
+  typeLabel.style.cssText = 'font-size:11px;color:var(--text3);font-weight:600;flex:1;';
+  typeLabel.textContent = isStatic ? '⏱ Esercizio statico (secondi)' : '🏋️ Esercizio normale (reps)';
+  const typeBtn = document.createElement('button');
+  typeBtn.className = 'btn btn-secondary btn-sm';
+  typeBtn.style.fontSize = '11px';
+  typeBtn.textContent = isStatic ? 'Passa a Reps' : 'Passa a Secondi';
+  typeBtn.addEventListener('click', () => {
+    ex.type = isStatic ? 'normal' : 'static';
+    saveStore();
+    // Ri-renderizza la riga
+    const newRow = renderExerciseSetupRow(ex, wk);
+    row.replaceWith(newRow);
+  });
+  typeRow.appendChild(typeLabel);
+  typeRow.appendChild(typeBtn);
+  row.appendChild(typeRow);
+
+  // Campo nota setup
+  const noteInput = document.createElement('textarea');
+  noteInput.className = 'input-field';
+  noteInput.style.cssText = 'margin-top:8px;height:52px;resize:none;font-size:12px;';
+  noteInput.placeholder = 'Nota per questo esercizio (es. posizione, grip, avvertenze)…';
+  noteInput.value = ex.setupNote || '';
+  noteInput.addEventListener('change', () => { ex.setupNote = noteInput.value.trim(); saveStore(); });
+  row.appendChild(noteInput);
+
   return row;
 }
 
@@ -3511,6 +3628,42 @@ function renderStatExerciseCard(ex) {
   const progDiv = document.createElement('div');
   progDiv.className = 'divider';
   body.appendChild(progDiv);
+
+  // Giorno di progressione attuale (manuale)
+  const currDayRow = document.createElement('div');
+  currDayRow.style.cssText = 'display:flex;align-items:center;gap:10px;margin-top:10px;margin-bottom:8px;';
+  const currDayLabel = document.createElement('span');
+  currDayLabel.className = 'text-sm text-muted';
+  currDayLabel.style.flex = '1';
+  currDayLabel.textContent = 'Sono al giorno:';
+  const currDayInput = document.createElement('input');
+  currDayInput.type = 'number';
+  currDayInput.min = '1';
+  currDayInput.max = String(ex.progressEvery || 4);
+  currDayInput.value = ex.progressCurrentDay || 1;
+  currDayInput.className = 'input-field';
+  currDayInput.style.cssText = 'width:70px;text-align:center;padding:8px;';
+  currDayInput.setAttribute('inputmode', 'numeric');
+  const currDayOf = document.createElement('span');
+  currDayOf.className = 'text-sm text-muted';
+  currDayOf.textContent = `di ${ex.progressEvery || 4}`;
+  currDayInput.addEventListener('change', () => {
+    const v = parseInt(currDayInput.value);
+    const max = ex.progressEvery || 4;
+    if (!isNaN(v) && v >= 1 && v <= max) {
+      ex.progressCurrentDay = v;
+      saveStore();
+      checkProgressBanner();
+    } else {
+      currDayInput.value = ex.progressCurrentDay || 1;
+    }
+  });
+  currDayRow.appendChild(currDayLabel);
+  currDayRow.appendChild(currDayInput);
+  currDayRow.appendChild(currDayOf);
+  body.appendChild(currDayRow);
+
+  // Progredisci ogni N sedute
   const progRow = document.createElement('div');
   progRow.style.cssText = 'display:flex;align-items:center;gap:10px;margin-top:6px;';
   const progLabel = document.createElement('span');
@@ -3527,8 +3680,20 @@ function renderStatExerciseCard(ex) {
   progInput.setAttribute('inputmode', 'numeric');
   progInput.addEventListener('change', () => {
     const v = parseInt(progInput.value);
-    if (!isNaN(v) && v >= 1) { ex.progressEvery = v; saveStore(); checkProgressBanner(); }
-    else progInput.value = ex.progressEvery || 4;
+    if (!isNaN(v) && v >= 1) {
+      ex.progressEvery = v;
+      currDayInput.max = String(v);
+      currDayOf.textContent = `di ${v}`;
+      // Aggiusta giorno corrente se supera il nuovo massimo
+      if ((ex.progressCurrentDay || 1) > v) {
+        ex.progressCurrentDay = v;
+        currDayInput.value = v;
+      }
+      saveStore();
+      checkProgressBanner();
+    } else {
+      progInput.value = ex.progressEvery || 4;
+    }
   });
   progRow.appendChild(progLabel);
   progRow.appendChild(progInput);
@@ -4142,6 +4307,7 @@ function init() {
     initOnboarding();
   } else {
     showApp();
+    recomputeAllPRs(); // Sanifica PR errati da sessioni precedenti
     navigate('registro');
     checkProgressBanner();
     checkBackupReminder();

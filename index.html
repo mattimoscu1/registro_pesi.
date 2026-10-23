@@ -2125,7 +2125,7 @@ function importProfile(file) {
               if (ex.reps && !ex.repsMax) ex.repsMax = ex.reps;
               if (!ex.type) ex.type = 'normal';
               if (!ex.setupNote) ex.setupNote = '';
-              if (!ex.increment) ex.increment = 2.5;
+              if (ex.increment === undefined || ex.increment === null) ex.increment = 2.5;
               if (!ex.progressEvery) ex.progressEvery = 4;
             }
           }
@@ -2217,7 +2217,7 @@ function computeProgressAlerts() {
       }
 
       if (isReady && currentMax > 0) {
-        const suggested = +(currentMax + (ex.increment || 2.5)).toFixed(4);
+        const suggested = +(currentMax + ((ex.increment !== undefined && ex.increment !== null ? ex.increment : 2.5))).toFixed(4);
         progressAlerts.push({
           exerciseName: ex.name,
           currentKg: currentMax,
@@ -2451,6 +2451,50 @@ function openDatePicker(workoutId, currentDateMs, onSelect) {
   });
 }
 
+// Controlla se esiste una seduta questa settimana per un giorno/workout
+function hasSessThisWeek(dayIdx, workoutId) {
+  const today = new Date();
+  today.setHours(0,0,0,0);
+  // Inizio settimana (lunedì)
+  const dow = today.getDay() === 0 ? 6 : today.getDay() - 1;
+  const weekStart = new Date(today);
+  weekStart.setDate(today.getDate() - dow);
+
+  return store.sessions.some(s => {
+    if (s.workoutId !== workoutId) return false;
+    const d = new Date(s.date);
+    d.setHours(0,0,0,0);
+    return d >= weekStart && d <= today && d.getDay() === dayIdx;
+  });
+}
+
+// Pre-completa una seduta con i pesi dell'ultima seduta dello stesso workout
+function preCompleteSession(sess, wk) {
+  let modified = false;
+  for (const se of sess.exercises) {
+    const exDef = wk.exercises.find(e => e.id === se.exerciseId);
+    const isStatic = exDef ? exDef.type === 'static' : false;
+    for (let i = 0; i < se.sets.length; i++) {
+      if (se.sets[i].weight === null && !isStatic) {
+        const lastW = getLastWeight(se.exerciseId, i);
+        if (lastW !== null) {
+          se.sets[i].weight = lastW;
+          modified = true;
+        }
+      }
+      // Per statici: precompila i secondi dell'ultima volta
+      if (isStatic && (se.sets[i].reps === null || se.sets[i].reps === undefined)) {
+        // usa repsMax come default
+        const repsMax = exDef ? (exDef.repsMax || exDef.reps || 30) : 30;
+        se.sets[i].reps = repsMax;
+        modified = true;
+      }
+    }
+  }
+  if (modified) saveStore();
+  return sess;
+}
+
 // ============================================================
 // REGISTRO PESI — Rendering
 // ============================================================
@@ -2577,25 +2621,37 @@ function renderRegistro() {
     return;
   }
 
-  // === SELETTORE DATA ===
+  // === Calcola subito selectedDayIndex e currentWorkout PRIMA di tutto il resto ===
+  const todayIdxEarly = todayDayIndex();
+  const configuredDaysEarly = new Set();
+  store.workouts.forEach(w => w.days.forEach(d => configuredDaysEarly.add(d)));
+  if (registroState.selectedDayIndex === null) {
+    registroState.selectedDayIndex = configuredDaysEarly.has(todayIdxEarly) ? todayIdxEarly :
+      (configuredDaysEarly.size > 0 ? [...configuredDaysEarly][0] : todayIdxEarly);
+  }
+  registroState.currentWorkout = getWorkoutForDay(registroState.selectedDayIndex);
+
+  // === SELETTORE DATA (ora currentWorkout è già impostato) ===
   daySelector.innerHTML = '';
 
   // Chip data corrente con pulsante per cambiarla
   const activeDateD = getActiveDate();
   const isToday     = isActiveToday();
-  const dateChip    = document.createElement('div');
-  dateChip.style.cssText = 'display:flex;align-items:center;gap:6px;padding:0 4px;flex-shrink:0;';
+  // Chip data — click singolo apre il calendario
+  const dateChip = document.createElement('div');
+  dateChip.style.cssText = 'display:flex;align-items:center;gap:4px;padding:0 4px;flex-shrink:0;';
 
-  const dateLbl = document.createElement('span');
-  dateLbl.style.cssText = 'font-size:12px;font-weight:700;color:var(--text2);white-space:nowrap;';
-  dateLbl.textContent   = isToday ? 'Oggi' : formatDate(activeDateD.getTime());
-  dateChip.appendChild(dateLbl);
-
-  const calBtn = document.createElement('button');
-  calBtn.className   = 'btn btn-sm btn-secondary';
-  calBtn.style.cssText = 'padding:5px 10px;font-size:11px;flex-shrink:0;';
-  calBtn.textContent = '📅 Cambia data';
-  calBtn.addEventListener('click', () => {
+  const dateLbl = document.createElement('button');
+  dateLbl.style.cssText = [
+    'font-size:12px;font-weight:700;',
+    'color:' + (isToday ? 'var(--text2)' : 'var(--accent-light)') + ';',
+    'white-space:nowrap;background:var(--surface);',
+    'border:1.5px solid var(--border);border-radius:999px;',
+    'padding:5px 10px;cursor:pointer;display:flex;align-items:center;gap:5px;'
+  ].join('');
+  dateLbl.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> ' + (isToday ? 'Oggi' : formatDate(activeDateD.getTime()));
+  dateLbl.title = 'Tocca per cambiare data allenamento';
+  dateLbl.addEventListener('click', () => {
     const wk = registroState.currentWorkout;
     if (!wk) return;
     const currentMs = registroState.workoutDates[wk.id] || null;
@@ -2605,13 +2661,13 @@ function renderRegistro() {
       renderRegistro();
     });
   });
-  dateChip.appendChild(calBtn);
+  dateChip.appendChild(dateLbl);
 
   if (!isToday) {
     const resetBtn = document.createElement('button');
-    resetBtn.className   = 'btn btn-sm btn-ghost';
-    resetBtn.style.cssText = 'padding:5px 8px;font-size:11px;flex-shrink:0;color:var(--accent);';
-    resetBtn.textContent = '↺ Oggi';
+    resetBtn.style.cssText = 'font-size:14px;background:none;border:none;color:var(--text3);cursor:pointer;padding:2px 4px;line-height:1;';
+    resetBtn.textContent = '↺';
+    resetBtn.title = 'Torna a oggi';
     resetBtn.addEventListener('click', () => {
       const wk = registroState.currentWorkout;
       if (wk) delete registroState.workoutDates[wk.id];
@@ -2628,23 +2684,30 @@ function renderRegistro() {
   daySelector.appendChild(sep);
 
   // Chip giorni settimana
-  const todayIdx = todayDayIndex();
-  const configuredDays = new Set();
-  store.workouts.forEach(w => w.days.forEach(d => configuredDays.add(d)));
-
-  if (registroState.selectedDayIndex === null) {
-    const activeDayIdx = activeDateD.getDay();
-    registroState.selectedDayIndex = configuredDays.has(activeDayIdx) ? activeDayIdx :
-      (configuredDays.size > 0 ? [...configuredDays][0] : activeDayIdx);
-  }
+  const todayIdx      = todayIdxEarly;
+  const configuredDays = configuredDaysEarly;
 
   [1,2,3,4,5,6,0].forEach(dayIdx => {
     const chip = document.createElement('div');
     chip.className = 'day-chip';
     if (dayIdx === todayIdx) chip.classList.add('today');
     if (dayIdx === registroState.selectedDayIndex) chip.classList.add('active');
+
+    const wkForDay = getWorkoutForDay(dayIdx);
     chip.textContent = DAYS_SHORT[dayIdx];
-    if (!configuredDays.has(dayIdx)) chip.style.opacity = '0.35';
+
+    // Mostra badge ✓ se c'è una seduta questa settimana per questo giorno
+    if (wkForDay) {
+      const sessThisWeek = hasSessThisWeek(dayIdx, wkForDay.id);
+      if (sessThisWeek) {
+        const dot = document.createElement('span');
+        dot.style.cssText = 'display:block;width:5px;height:5px;border-radius:50%;background:var(--success);margin:1px auto 0;';
+        chip.appendChild(dot);
+      }
+    } else {
+      chip.style.opacity = '0.35';
+    }
+
     chip.addEventListener('click', () => {
       registroState.selectedDayIndex = dayIdx;
       registroState.openExercises.clear();
@@ -2653,8 +2716,6 @@ function renderRegistro() {
     daySelector.appendChild(chip);
   });
 
-  // Workout del giorno selezionato
-  registroState.currentWorkout = getWorkoutForDay(registroState.selectedDayIndex);
   exercisesEl.innerHTML = '';
 
   if (!registroState.currentWorkout) {
@@ -2671,9 +2732,22 @@ function renderRegistro() {
   }
 
   const session = getOrCreateTodaySession();
-  const allDone = session && session.exercises.every(se =>
-    se.sets.every(st => st.weight !== null)
-  );
+
+  // Se il giorno è già passato questa settimana, pre-compila con i pesi precedenti
+  // MA solo se la sessione è appena stata creata (tutti i pesi sono null)
+  if (session && !isActiveToday()) {
+    const isEmpty = session.exercises.every(se =>
+      se.sets.every(st => st.weight === null && (st.reps === null || st.reps === undefined))
+    );
+    if (isEmpty) preCompleteSession(session, registroState.currentWorkout);
+  }
+
+  // allDone: considera anche statici (weight null OK per statici, conta solo reps)
+  const allDone = session && session.exercises.every(se => {
+    const exDef = registroState.currentWorkout.exercises.find(e => e.id === se.exerciseId);
+    const isStatic = exDef ? exDef.type === 'static' : false;
+    return se.sets.every(st => isStatic ? (st.reps != null) : (st.weight !== null));
+  });
   completeBtn.style.display = allDone ? '' : 'none';
 
   // Render esercizi
@@ -2703,9 +2777,12 @@ function createLockedScreen() {
 }
 
 function renderExerciseCard(ex, exIdx, session) {
-  const isOpen = registroState.openExercises.has(ex.id);
-  const seData = session ? session.exercises.find(e => e.exerciseId === ex.id) : null;
-  const allSetsDone = seData ? seData.sets.every(s => s.weight !== null) : false;
+  const isOpen      = registroState.openExercises.has(ex.id);
+  const seData      = session ? session.exercises.find(e => e.exerciseId === ex.id) : null;
+  const isStaticEx  = ex.type === 'static';
+  const allSetsDone = seData ? seData.sets.every(s =>
+    isStaticEx ? (s.reps != null) : (s.weight !== null)
+  ) : false;
   const hasPR = checkIfPR(ex.id, seData);
 
   const card = document.createElement('div');
@@ -2957,7 +3034,7 @@ function openNumpad(ex, setIdx, prefillKg, session) {
     value: prefillKg !== null ? kgToDisplay(prefillKg).toString() : '',
     exerciseId: ex.id,
     setIndex: setIdx,
-    increment: ex.increment || 2.5,
+    increment: (ex.increment !== undefined && ex.increment !== null ? ex.increment : 2.5),
     lastW: prefillKg,
     session: session,
     repsMin,
@@ -2970,15 +3047,18 @@ function openNumpad(ex, setIdx, prefillKg, session) {
 
   updateNumpadDisplay();
 
-  const incLabel = kgToDisplay(ex.increment || 2.5);
+  const incLabel = kgToDisplay((ex.increment !== undefined && ex.increment !== null ? ex.increment : 2.5));
   document.getElementById('numpad-inc-label').textContent  = ` ${incLabel}`;
   document.getElementById('numpad-inc-label2').textContent = ` ${incLabel}`;
 
   const suggestedKg = getLastWeight(ex.id, setIdx);
   const suggEl = document.getElementById('numpad-suggestion');
-  if (suggestedKg !== null) {
-    const suggested = +(suggestedKg + (ex.increment || 2.5)).toFixed(4);
+  const inc = (ex.increment !== undefined && ex.increment !== null ? ex.increment : 2.5);
+  if (suggestedKg !== null && inc > 0) {
+    const suggested = +(suggestedKg + inc).toFixed(4);
     suggEl.innerHTML = `Ultima volta: <span>${kgToDisplay(suggestedKg)} ${unitLabel()}</span> — Progressione: <span>${kgToDisplay(suggested)} ${unitLabel()}</span>`;
+  } else if (suggestedKg !== null) {
+    suggEl.innerHTML = `Ultima volta: <span>${kgToDisplay(suggestedKg)} ${unitLabel()}</span> — <span style="color:var(--text3)">nessuna progressione</span>`;
   } else {
     suggEl.innerHTML = 'Prima volta — inserisci il peso';
   }
@@ -3041,10 +3121,10 @@ document.getElementById('numpad-grid').addEventListener('click', e => {
 
 document.getElementById('numpad-minus').addEventListener('click', () => {
   vibrate(10);
+  const inc = numpadState.increment !== undefined ? numpadState.increment : 2.5;
+  if (inc === 0) return; // nessuna progressione
   const cur = parseFloat(numpadState.value) || 0;
-  const incKg = store.settings.unit === 'lb'
-    ? numpadState.increment * 2.20462
-    : numpadState.increment;
+  const incKg = store.settings.unit === 'lb' ? inc * 2.20462 : inc;
   const newVal = Math.max(0, +(cur - incKg).toFixed(2));
   numpadState.value = newVal.toString();
   updateNumpadDisplay();
@@ -3052,10 +3132,10 @@ document.getElementById('numpad-minus').addEventListener('click', () => {
 
 document.getElementById('numpad-plus').addEventListener('click', () => {
   vibrate(10);
+  const inc = numpadState.increment !== undefined ? numpadState.increment : 2.5;
+  if (inc === 0) return; // nessuna progressione
   const cur = parseFloat(numpadState.value) || 0;
-  const incKg = store.settings.unit === 'lb'
-    ? numpadState.increment * 2.20462
-    : numpadState.increment;
+  const incKg = store.settings.unit === 'lb' ? inc * 2.20462 : inc;
   const newVal = +(cur + incKg).toFixed(2);
   numpadState.value = newVal.toString();
   updateNumpadDisplay();
@@ -3604,7 +3684,7 @@ function openNumpadForHistory(exDef, setIdx, currentWeightKg, sess, se) {
     value: currentWeightKg !== null ? kgToDisplay(currentWeightKg).toString() : '',
     exerciseId: exDef.id,
     setIndex: setIdx,
-    increment: exDef.increment || 2.5,
+    increment: (exDef.increment !== undefined && exDef.increment !== null ? exDef.increment : 2.5),
     lastW: currentWeightKg,
     session: sess,
     repsMin: exDef.repsMin || exDef.reps || 1,
@@ -3619,7 +3699,7 @@ function openNumpadForHistory(exDef, setIdx, currentWeightKg, sess, se) {
 
   updateNumpadDisplay();
 
-  const incLabel = kgToDisplay(exDef.increment || 2.5);
+  const incLabel = kgToDisplay((exDef.increment !== undefined && exDef.increment !== null ? exDef.increment : 2.5));
   document.getElementById('numpad-inc-label').textContent  = ` ${incLabel}`;
   document.getElementById('numpad-inc-label2').textContent = ` ${incLabel}`;
   document.getElementById('numpad-suggestion').innerHTML   = `Valore attuale: <span>${currentWeightKg !== null ? kgToDisplay(currentWeightKg) + ' ' + unitLabel() : '—'}</span>`;

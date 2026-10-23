@@ -2273,44 +2273,179 @@ function checkBackupReminder() {
 }
 
 // ============================================================
-// SELETTORE DATA (calendario manuale)
+// SELETTORE DATA — Calendario visivo per workout specifico
 // ============================================================
-function openDatePicker() {
-  const activeDate = getActiveDate();
-  // Formato YYYY-MM-DD per input[type=date]
-  const yyyy = activeDate.getFullYear();
-  const mm   = String(activeDate.getMonth()+1).padStart(2,'0');
-  const dd   = String(activeDate.getDate()).padStart(2,'0');
-  const currentVal = `${yyyy}-${mm}-${dd}`;
-  const todayVal   = new Date().toISOString().slice(0,10);
+
+// Apre il calendario visivo per scegliere la data di un workout specifico
+function openDatePicker(workoutId, currentDateMs, onSelect) {
+  const today     = new Date();
+  today.setHours(0,0,0,0);
+  const current   = currentDateMs ? new Date(currentDateMs) : new Date();
+  current.setHours(0,0,0,0);
+
+  // Stato del calendario (mese visualizzato)
+  let calYear  = current.getFullYear();
+  let calMonth = current.getMonth();
+  let selected = new Date(current);
 
   const bodyEl = document.createElement('div');
 
   const lbl = document.createElement('p');
-  lbl.style.cssText = 'font-size:14px;color:var(--text2);margin-bottom:12px;';
-  lbl.textContent = 'Scegli la data dell\'allenamento. Puoi registrare sedute passate o future.';
+  lbl.style.cssText = 'font-size:13px;color:var(--text2);margin-bottom:12px;line-height:1.4;';
+  lbl.textContent = 'Scegli la data di questo allenamento. Solo questo workout verrà registrato in quella data.';
   bodyEl.appendChild(lbl);
 
-  const inp = document.createElement('input');
-  inp.type  = 'date';
-  inp.className = 'input-field';
-  inp.value = currentVal;
-  inp.max   = todayVal; // Non permette date future
-  bodyEl.appendChild(inp);
+  // Contenitore calendario
+  const calWrap = document.createElement('div');
+  calWrap.style.cssText = 'background:var(--bg3);border-radius:var(--radius);overflow:hidden;';
+  bodyEl.appendChild(calWrap);
+
+  function renderCal() {
+    calWrap.innerHTML = '';
+
+    // Header mese: frecce + nome mese
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--surface);';
+
+    const prevBtn = document.createElement('button');
+    prevBtn.className   = 'btn btn-icon';
+    prevBtn.style.cssText = 'width:32px;height:32px;font-size:18px;';
+    prevBtn.textContent = '‹';
+    prevBtn.addEventListener('click', () => {
+      calMonth--;
+      if (calMonth < 0) { calMonth = 11; calYear--; }
+      renderCal();
+    });
+
+    const monthLbl = document.createElement('span');
+    monthLbl.style.cssText = 'font-size:15px;font-weight:700;';
+    const MESI = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno',
+                  'Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre'];
+    monthLbl.textContent = `${MESI[calMonth]} ${calYear}`;
+
+    const nextBtn = document.createElement('button');
+    nextBtn.className   = 'btn btn-icon';
+    nextBtn.style.cssText = 'width:32px;height:32px;font-size:18px;';
+    nextBtn.textContent = '›';
+    // Non permettere mesi futuri
+    const isCurrentMonth = calYear === today.getFullYear() && calMonth === today.getMonth();
+    if (isCurrentMonth) {
+      nextBtn.disabled = true;
+      nextBtn.style.opacity = '0.3';
+    }
+    nextBtn.addEventListener('click', () => {
+      calMonth++;
+      if (calMonth > 11) { calMonth = 0; calYear++; }
+      renderCal();
+    });
+
+    header.appendChild(prevBtn);
+    header.appendChild(monthLbl);
+    header.appendChild(nextBtn);
+    calWrap.appendChild(header);
+
+    // Intestazione giorni settimana
+    const daysHeader = document.createElement('div');
+    daysHeader.style.cssText = 'display:grid;grid-template-columns:repeat(7,1fr);padding:8px 8px 4px;gap:2px;';
+    ['L','M','M','G','V','S','D'].forEach(d => {
+      const cell = document.createElement('div');
+      cell.style.cssText = 'text-align:center;font-size:11px;font-weight:700;color:var(--text3);padding:4px 0;';
+      cell.textContent = d;
+      daysHeader.appendChild(cell);
+    });
+    calWrap.appendChild(daysHeader);
+
+    // Griglia giorni
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(7,1fr);padding:0 8px 10px;gap:4px;';
+
+    const firstDay = new Date(calYear, calMonth, 1);
+    // Converti domenica(0) → 7 per avere lun=1
+    let startDow = firstDay.getDay();
+    if (startDow === 0) startDow = 7;
+
+    // Celle vuote prima del primo giorno
+    for (let i = 1; i < startDow; i++) {
+      grid.appendChild(document.createElement('div'));
+    }
+
+    const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+    for (let d = 1; d <= daysInMonth; d++) {
+      const date = new Date(calYear, calMonth, d);
+      date.setHours(0,0,0,0);
+
+      const isFuture   = date > today;
+      const isToday    = date.getTime() === today.getTime();
+      const isSelected = date.getTime() === selected.getTime();
+
+      // Controlla se esiste già una seduta per questo workout in questa data
+      const hasSess = store.sessions.some(s => {
+        const sd = new Date(s.date); sd.setHours(0,0,0,0);
+        return sd.getTime() === date.getTime() && s.workoutId === workoutId;
+      });
+
+      const cell = document.createElement('button');
+      cell.style.cssText = `
+        width:100%;aspect-ratio:1;border:none;border-radius:50%;
+        font-size:13px;font-weight:600;cursor:pointer;
+        position:relative;transition:all 0.15s ease;
+        display:flex;align-items:center;justify-content:center;
+        flex-direction:column;gap:1px;
+      `;
+      cell.textContent = d;
+
+      if (isSelected) {
+        cell.style.background = 'var(--accent)';
+        cell.style.color = '#fff';
+      } else if (isToday) {
+        cell.style.background = 'rgba(108,99,255,0.2)';
+        cell.style.color = 'var(--accent-light)';
+      } else if (isFuture) {
+        cell.style.opacity = '0.25';
+        cell.style.cursor  = 'default';
+      } else {
+        cell.style.background = 'transparent';
+        cell.style.color = 'var(--text)';
+      }
+
+      // Pallino verde se c'è già una seduta
+      if (hasSess) {
+        const dot = document.createElement('div');
+        dot.style.cssText = `
+          width:4px;height:4px;border-radius:50%;
+          background:${isSelected ? '#fff' : 'var(--success)'};
+          position:absolute;bottom:3px;left:50%;transform:translateX(-50%);
+        `;
+        cell.appendChild(dot);
+      }
+
+      if (!isFuture) {
+        cell.addEventListener('click', () => {
+          selected = new Date(date);
+          renderCal();
+        });
+      }
+
+      grid.appendChild(cell);
+    }
+    calWrap.appendChild(grid);
+  }
+
+  renderCal();
 
   showModal({
     title: '📅 Data allenamento',
     body: bodyEl,
     actions: [
       { label: 'Annulla', cls: 'btn-secondary' },
+      { label: 'Oggi', cls: 'btn-ghost', action: () => {
+        selected = new Date(today);
+        // aggiorna e riapri
+        onSelect(new Date(today).setHours(12,0,0,0));
+      }},
       { label: 'Conferma', cls: 'btn-primary', action: () => {
-        const val = inp.value;
-        if (!val) return;
-        const [y,m,d] = val.split('-').map(Number);
-        const date = new Date(y, m-1, d, 12, 0, 0, 0);
-        registroState.selectedDate = date.getTime();
-        registroState.openExercises.clear();
-        renderRegistro();
+        selected.setHours(12,0,0,0);
+        onSelect(selected.getTime());
       }}
     ]
   });
@@ -2321,7 +2456,7 @@ function openDatePicker() {
 // ============================================================
 let registroState = {
   selectedDayIndex: null,
-  selectedDate: null,      // null = oggi, altrimenti timestamp della data scelta
+  workoutDates: {},        // { workoutId: timestamp } — data per ogni workout
   openExercises: new Set(),
   currentWorkout: null
 };
@@ -2330,18 +2465,21 @@ function getWorkoutForDay(dayIndex) {
   return store.workouts.find(w => w.days.includes(dayIndex)) || null;
 }
 
-// Data attiva (oggi o data personalizzata)
+// Data attiva per il workout corrente (oggi se non impostata)
 function getActiveDate() {
-  if (registroState.selectedDate) return new Date(registroState.selectedDate);
+  const wkId = registroState.currentWorkout ? registroState.currentWorkout.id : null;
+  if (wkId && registroState.workoutDates[wkId]) {
+    return new Date(registroState.workoutDates[wkId]);
+  }
   return new Date();
 }
 
 function isActiveToday() {
-  if (!registroState.selectedDate) return true;
-  const active = new Date(registroState.selectedDate);
+  const active = getActiveDate();
   const today  = new Date();
   return active.toDateString() === today.toDateString();
 }
+
 
 function getTodaySession() {
   const active = getActiveDate();
@@ -2457,7 +2595,16 @@ function renderRegistro() {
   calBtn.className   = 'btn btn-sm btn-secondary';
   calBtn.style.cssText = 'padding:5px 10px;font-size:11px;flex-shrink:0;';
   calBtn.textContent = '📅 Cambia data';
-  calBtn.addEventListener('click', () => openDatePicker());
+  calBtn.addEventListener('click', () => {
+    const wk = registroState.currentWorkout;
+    if (!wk) return;
+    const currentMs = registroState.workoutDates[wk.id] || null;
+    openDatePicker(wk.id, currentMs, (newDateMs) => {
+      registroState.workoutDates[wk.id] = newDateMs;
+      registroState.openExercises.clear();
+      renderRegistro();
+    });
+  });
   dateChip.appendChild(calBtn);
 
   if (!isToday) {
@@ -2466,7 +2613,8 @@ function renderRegistro() {
     resetBtn.style.cssText = 'padding:5px 8px;font-size:11px;flex-shrink:0;color:var(--accent);';
     resetBtn.textContent = '↺ Oggi';
     resetBtn.addEventListener('click', () => {
-      registroState.selectedDate = null;
+      const wk = registroState.currentWorkout;
+      if (wk) delete registroState.workoutDates[wk.id];
       registroState.openExercises.clear();
       renderRegistro();
     });

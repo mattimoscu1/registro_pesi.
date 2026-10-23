@@ -2175,7 +2175,10 @@ function computeProgressAlerts() {
       const currentDay = ex.progressCurrentDay || null;
 
       const sessions = store.sessions
-        .filter(s => s.exercises.some(se => se.exerciseId === ex.id))
+        .filter(s => {
+          if (s.workoutId !== workout.id) return false;
+          return isSessionValid(s, ex.id);
+        })
         .sort((a, b) => a.date - b.date);
 
       let isReady = false;
@@ -2576,8 +2579,12 @@ function getSessionForDateAndWorkout(dateMs, workoutId) {
 
 // Trova l'ultimo peso usato per una serie di un esercizio (da sessione precedente)
 function getLastWeight(exerciseId, setIndex) {
+  const workoutId = getWorkoutIdForExercise(exerciseId);
   const sessions = store.sessions
-    .filter(s => s.exercises.some(e => e.exerciseId === exerciseId))
+    .filter(s => {
+      if (workoutId && s.workoutId !== workoutId) return false;
+      return isSessionValid(s, exerciseId);
+    })
     .sort((a, b) => b.date - a.date);
   for (const s of sessions) {
     if (s === getTodaySession()) continue;
@@ -2590,8 +2597,12 @@ function getLastWeight(exerciseId, setIndex) {
 }
 
 function getPreviousNote(exerciseId) {
+  const workoutId = getWorkoutIdForExercise(exerciseId);
   const sessions = store.sessions
-    .filter(s => s.exercises.some(e => e.exerciseId === exerciseId))
+    .filter(s => {
+      if (workoutId && s.workoutId !== workoutId) return false;
+      return s.exercises.some(e => e.exerciseId === exerciseId);
+    })
     .sort((a, b) => b.date - a.date);
   for (const s of sessions) {
     if (s === getTodaySession()) continue;
@@ -3201,6 +3212,20 @@ document.getElementById('numpad-confirm').addEventListener('click', () => {
 
   if (currentScreen === 'registro') renderRegistro();
 });
+
+// Rimuove sessioni senza nessun dato reale (create per errore dalla navigazione)
+function cleanEmptySessions() {
+  const before = store.sessions.length;
+  store.sessions = store.sessions.filter(sess => {
+    // Tieni la sessione se almeno una serie ha peso o secondi inseriti
+    return sess.exercises.some(se =>
+      se.sets.some(st => st.weight !== null || (st.reps != null && st.reps > 0))
+    );
+  });
+  if (store.sessions.length < before) {
+    saveStore();
+  }
+}
 
 // Ricalcola il PR per un esercizio leggendo tutte le sedute
 function recomputePR(exerciseId) {
@@ -3881,8 +3906,12 @@ function findExercise(exId) {
 }
 
 function getConsecutiveSameSessions(exId) {
+  const workoutId = getWorkoutIdForExercise(exId);
   const sessions = store.sessions
-    .filter(s => s.exercises.some(e => e.exerciseId === exId))
+    .filter(s => {
+      if (workoutId && s.workoutId !== workoutId) return false;
+      return isSessionValid(s, exId);
+    })
     .sort((a, b) => a.date - b.date);
   if (sessions.length < 2) return 0;
   let count = 1;
@@ -3902,9 +3931,31 @@ function getMaxWeight(sess, exId) {
   return ws.length > 0 ? Math.max(...ws) : 0;
 }
 
+// Una sessione è "valida" (ha dati reali) se almeno una serie ha un peso o secondi inseriti
+function isSessionValid(sess, exId) {
+  const se = sess.exercises.find(e => e.exerciseId === exId);
+  if (!se || !se.sets || !se.sets.length) return false;
+  return se.sets.some(st => st.weight !== null || (st.reps != null && st.reps > 0));
+}
+
+// Trova il workoutId a cui appartiene un esercizio
+function getWorkoutIdForExercise(exId) {
+  for (const wk of store.workouts) {
+    if (wk.exercises.some(e => e.id === exId)) return wk.id;
+  }
+  return null;
+}
+
 function renderStatExerciseCard(ex) {
+  const workoutId = getWorkoutIdForExercise(ex.id);
+
   const sessions = store.sessions
-    .filter(s => s.exercises.some(e => e.exerciseId === ex.id))
+    .filter(s => {
+      // Solo sedute dello stesso workout
+      if (workoutId && s.workoutId !== workoutId) return false;
+      // Solo sedute con dati reali (almeno un peso inserito)
+      return isSessionValid(s, ex.id);
+    })
     .sort((a, b) => a.date - b.date);
   if (sessions.length === 0) return null;
 
@@ -4707,7 +4758,9 @@ function init() {
     initOnboarding();
   } else {
     showApp();
-    recomputeAllPRs(); // Sanifica PR errati da sessioni precedenti
+    // Rimuovi sessioni completamente vuote create per errore
+    cleanEmptySessions();
+    recomputeAllPRs();
     navigate('registro');
     checkProgressBanner();
     checkBackupReminder();

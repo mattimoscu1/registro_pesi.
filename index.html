@@ -2257,10 +2257,55 @@ function checkBackupReminder() {
 }
 
 // ============================================================
+// SELETTORE DATA (calendario manuale)
+// ============================================================
+function openDatePicker() {
+  const activeDate = getActiveDate();
+  // Formato YYYY-MM-DD per input[type=date]
+  const yyyy = activeDate.getFullYear();
+  const mm   = String(activeDate.getMonth()+1).padStart(2,'0');
+  const dd   = String(activeDate.getDate()).padStart(2,'0');
+  const currentVal = `${yyyy}-${mm}-${dd}`;
+  const todayVal   = new Date().toISOString().slice(0,10);
+
+  const bodyEl = document.createElement('div');
+
+  const lbl = document.createElement('p');
+  lbl.style.cssText = 'font-size:14px;color:var(--text2);margin-bottom:12px;';
+  lbl.textContent = 'Scegli la data dell\'allenamento. Puoi registrare sedute passate o future.';
+  bodyEl.appendChild(lbl);
+
+  const inp = document.createElement('input');
+  inp.type  = 'date';
+  inp.className = 'input-field';
+  inp.value = currentVal;
+  inp.max   = todayVal; // Non permette date future
+  bodyEl.appendChild(inp);
+
+  showModal({
+    title: '📅 Data allenamento',
+    body: bodyEl,
+    actions: [
+      { label: 'Annulla', cls: 'btn-secondary' },
+      { label: 'Conferma', cls: 'btn-primary', action: () => {
+        const val = inp.value;
+        if (!val) return;
+        const [y,m,d] = val.split('-').map(Number);
+        const date = new Date(y, m-1, d, 12, 0, 0, 0);
+        registroState.selectedDate = date.getTime();
+        registroState.openExercises.clear();
+        renderRegistro();
+      }}
+    ]
+  });
+}
+
+// ============================================================
 // REGISTRO PESI — Rendering
 // ============================================================
 let registroState = {
   selectedDayIndex: null,
+  selectedDate: null,      // null = oggi, altrimenti timestamp della data scelta
   openExercises: new Set(),
   currentWorkout: null
 };
@@ -2269,13 +2314,26 @@ function getWorkoutForDay(dayIndex) {
   return store.workouts.find(w => w.days.includes(dayIndex)) || null;
 }
 
+// Data attiva (oggi o data personalizzata)
+function getActiveDate() {
+  if (registroState.selectedDate) return new Date(registroState.selectedDate);
+  return new Date();
+}
+
+function isActiveToday() {
+  if (!registroState.selectedDate) return true;
+  const active = new Date(registroState.selectedDate);
+  const today  = new Date();
+  return active.toDateString() === today.toDateString();
+}
+
 function getTodaySession() {
-  const today = new Date();
-  today.setHours(0,0,0,0);
+  const active = getActiveDate();
+  active.setHours(0,0,0,0);
   return store.sessions.find(s => {
     const d = new Date(s.date);
     d.setHours(0,0,0,0);
-    return d.getTime() === today.getTime() &&
+    return d.getTime() === active.getTime() &&
       s.workoutId === (registroState.currentWorkout ? registroState.currentWorkout.id : null);
   }) || null;
 }
@@ -2285,15 +2343,17 @@ function getOrCreateTodaySession() {
   if (!sess) {
     const wk = registroState.currentWorkout;
     if (!wk) return null;
+    const activeDate = getActiveDate();
+    activeDate.setHours(12,0,0,0);
     sess = {
       id: uid(),
-      date: Date.now(),
+      date: activeDate.getTime(),
       workoutId: wk.id,
       exercises: wk.exercises.map(ex => ({
         exerciseId: ex.id,
         sets: Array.from({ length: ex.sets }, () => ({
           weight: null,
-          reps: ex.repsMax || ex.reps || 10,  // propone il massimo come obiettivo
+          reps: ex.repsMax || ex.reps || 10,
           note: ''
         })),
         note: ''
@@ -2303,6 +2363,17 @@ function getOrCreateTodaySession() {
     saveStore();
   }
   return sess;
+}
+
+// Ottieni sessione per una data specifica e un workout (senza crearla)
+function getSessionForDateAndWorkout(dateMs, workoutId) {
+  const d = new Date(dateMs);
+  d.setHours(0,0,0,0);
+  return store.sessions.find(s => {
+    const sd = new Date(s.date);
+    sd.setHours(0,0,0,0);
+    return sd.getTime() === d.getTime() && s.workoutId === workoutId;
+  }) || null;
 }
 
 // Trova l'ultimo peso usato per una serie di un esercizio (da sessione precedente)
@@ -2333,13 +2404,13 @@ function getPreviousNote(exerciseId) {
 }
 
 function renderRegistro() {
-  const greeting = document.getElementById('registro-greeting');
+  const greeting    = document.getElementById('registro-greeting');
   const daySelector = document.getElementById('day-selector');
   const exercisesEl = document.getElementById('registro-exercises');
   const completeBtn = document.getElementById('registro-complete-btn');
 
   // Saluto
-  const hour = new Date().getHours();
+  const hour   = new Date().getHours();
   const saluto = hour < 12 ? 'Buongiorno' : hour < 18 ? 'Buon pomeriggio' : 'Buonasera';
   greeting.textContent = `${saluto}, ${store.profile.name} 👋`;
 
@@ -2352,30 +2423,64 @@ function renderRegistro() {
     return;
   }
 
-  // Selettore giorno
-  const today = todayDayIndex();
+  // === SELETTORE DATA ===
   daySelector.innerHTML = '';
 
-  // Mostra i giorni con almeno un workout
+  // Chip data corrente con pulsante per cambiarla
+  const activeDateD = getActiveDate();
+  const isToday     = isActiveToday();
+  const dateChip    = document.createElement('div');
+  dateChip.style.cssText = 'display:flex;align-items:center;gap:6px;padding:0 4px;flex-shrink:0;';
+
+  const dateLbl = document.createElement('span');
+  dateLbl.style.cssText = 'font-size:12px;font-weight:700;color:var(--text2);white-space:nowrap;';
+  dateLbl.textContent   = isToday ? 'Oggi' : formatDate(activeDateD.getTime());
+  dateChip.appendChild(dateLbl);
+
+  const calBtn = document.createElement('button');
+  calBtn.className   = 'btn btn-sm btn-secondary';
+  calBtn.style.cssText = 'padding:5px 10px;font-size:11px;flex-shrink:0;';
+  calBtn.textContent = '📅 Cambia data';
+  calBtn.addEventListener('click', () => openDatePicker());
+  dateChip.appendChild(calBtn);
+
+  if (!isToday) {
+    const resetBtn = document.createElement('button');
+    resetBtn.className   = 'btn btn-sm btn-ghost';
+    resetBtn.style.cssText = 'padding:5px 8px;font-size:11px;flex-shrink:0;color:var(--accent);';
+    resetBtn.textContent = '↺ Oggi';
+    resetBtn.addEventListener('click', () => {
+      registroState.selectedDate = null;
+      registroState.openExercises.clear();
+      renderRegistro();
+    });
+    dateChip.appendChild(resetBtn);
+  }
+  daySelector.appendChild(dateChip);
+
+  // Separatore
+  const sep = document.createElement('div');
+  sep.style.cssText = 'width:1px;height:28px;background:var(--border);flex-shrink:0;margin:0 4px;';
+  daySelector.appendChild(sep);
+
+  // Chip giorni settimana
+  const todayIdx = todayDayIndex();
   const configuredDays = new Set();
   store.workouts.forEach(w => w.days.forEach(d => configuredDays.add(d)));
 
-  // Se non è selezionato un giorno, usa il giorno corrente (o il primo disponibile)
   if (registroState.selectedDayIndex === null) {
-    registroState.selectedDayIndex = configuredDays.has(today) ? today :
-      (configuredDays.size > 0 ? [...configuredDays][0] : today);
+    const activeDayIdx = activeDateD.getDay();
+    registroState.selectedDayIndex = configuredDays.has(activeDayIdx) ? activeDayIdx :
+      (configuredDays.size > 0 ? [...configuredDays][0] : activeDayIdx);
   }
 
-  // Tutti i giorni della settimana (lun-dom)
   [1,2,3,4,5,6,0].forEach(dayIdx => {
     const chip = document.createElement('div');
     chip.className = 'day-chip';
-    if (dayIdx === today) chip.classList.add('today');
+    if (dayIdx === todayIdx) chip.classList.add('today');
     if (dayIdx === registroState.selectedDayIndex) chip.classList.add('active');
     chip.textContent = DAYS_SHORT[dayIdx];
-    if (!configuredDays.has(dayIdx)) {
-      chip.style.opacity = '0.35';
-    }
+    if (!configuredDays.has(dayIdx)) chip.style.opacity = '0.35';
     chip.addEventListener('click', () => {
       registroState.selectedDayIndex = dayIdx;
       registroState.openExercises.clear();
@@ -2564,7 +2669,17 @@ function renderSeriesRow(ex, setIdx, setData, lastW, session) {
   const display = document.createElement('div');
   display.className = 'weight-display';
   const currentW = setData ? setData.weight : null;
-  if (currentW !== null) {
+  const isStatic = ex.type === 'static';
+  if (isStatic) {
+    // Per statici: mostra solo i secondi, nessun peso
+    if (setData && setData.reps != null) {
+      display.textContent = `${setData.reps} sec`;
+      display.style.opacity = '';
+    } else {
+      display.textContent = '— sec';
+      display.style.opacity = '0.4';
+    }
+  } else if (currentW !== null) {
     display.textContent = kgToDisplay(currentW);
     display.appendChild(Object.assign(document.createElement('span'), {
       className: 'weight-unit',
@@ -2583,9 +2698,8 @@ function renderSeriesRow(ex, setIdx, setData, lastW, session) {
   }
 
   // Badge reps effettive (solo se la serie è stata salvata)
-  const repsMin = ex.repsMin || ex.reps || 1;
-  const repsMax = ex.repsMax || ex.reps || repsMin;
-  const isStatic = ex.type === 'static';
+  const repsMin  = ex.repsMin || ex.reps || 1;
+  const repsMax  = ex.repsMax || ex.reps || repsMin;
   const repsUnit = isStatic ? 'sec' : 'rip.';
   if (currentW !== null && setData && setData.reps != null) {
     const repsBadge = document.createElement('span');
@@ -2617,6 +2731,22 @@ function renderSeriesRow(ex, setIdx, setData, lastW, session) {
     e.stopPropagation();
     openNumpad(ex, setIdx, currentW !== null ? currentW : lastW, session);
   });
+
+  // Pulsante "senza peso" (solo per esercizi non statici e serie non ancora salvate)
+  if (!isStatic && currentW === null) {
+    const noWeightBtn = document.createElement('button');
+    noWeightBtn.className = 'btn btn-sm btn-ghost';
+    noWeightBtn.style.cssText = 'padding:5px 8px;font-size:11px;color:var(--text3);';
+    noWeightBtn.textContent = '—';
+    noWeightBtn.title = 'Segna senza peso (solo reps)';
+    noWeightBtn.setAttribute('aria-label', 'Segna senza peso');
+    noWeightBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Apre numpad con peso 0 pre-impostato
+      openNumpad(ex, setIdx, 0, session);
+    });
+    actions.appendChild(noWeightBtn);
+  }
 
   actions.appendChild(editBtn);
   row.appendChild(label);
@@ -2689,16 +2819,37 @@ function openNumpad(ex, setIdx, prefillKg, session) {
     suggEl.innerHTML = 'Prima volta — inserisci il peso';
   }
 
-  // Reps
+  // Reps/secondi
   const repsRange = document.getElementById('numpad-reps-range');
   const repsInput = document.getElementById('numpad-reps-input');
   const isStaticEx = ex.type === 'static';
-  const repsLabel = isStaticEx ? 'Secondi effettivi:' : 'Reps effettive:';
-  document.querySelector('#numpad-reps-row label').textContent = repsLabel;
-  repsRange.textContent = `(${isStaticEx ? 'range sec' : 'range'}: ${repsMin}–${repsMax})`;
+  numpadState._isStatic = isStaticEx;
+
+  // Per statici: nascondi il tastierino peso e mostra solo secondi
+  const numpadGrid  = document.getElementById('numpad-grid');
+  const numpadDisp  = document.getElementById('numpad-display');
+  const numpadQuick = document.querySelector('.numpad-quick');
+  const numpadSugg  = document.getElementById('numpad-suggestion');
+  if (isStaticEx) {
+    numpadDisp.style.display  = 'none';
+    numpadGrid.style.display  = 'none';
+    numpadQuick.style.display = 'none';
+    numpadSugg.style.display  = 'none';
+  } else {
+    numpadDisp.style.display  = '';
+    numpadGrid.style.display  = '';
+    numpadQuick.style.display = '';
+    numpadSugg.style.display  = '';
+  }
+
+  document.querySelector('#numpad-reps-row label').textContent =
+    isStaticEx ? 'Secondi tenuti:' : 'Reps effettive:';
+  repsRange.textContent = isStaticEx
+    ? `(obiettivo: ${repsMax} sec)`
+    : `(range: ${repsMin}–${repsMax})`;
   repsInput.value = currentReps;
-  repsInput.min = repsMin;
-  repsInput.max = repsMax;
+  repsInput.min   = 1;
+  repsInput.max   = 999;
 
   document.getElementById('numpad-overlay').classList.add('open');
 }
@@ -2781,18 +2932,23 @@ document.getElementById('numpad-confirm').addEventListener('click', () => {
   const se = sess.exercises.find(e => e.exerciseId === numpadState.exerciseId);
   if (!se) return;
   if (!se.sets[numpadState.setIndex]) return;
-  se.sets[numpadState.setIndex].weight = weightKg;
-  se.sets[numpadState.setIndex].reps   = reps;
 
-  // Aggiorna PR
-  const allWeights = sess.exercises
-    .filter(e => e.exerciseId === numpadState.exerciseId)
-    .flatMap(e => e.sets.map(s => s.weight || 0));
-  const maxNow = Math.max(...allWeights);
+  const isStaticEx = numpadState._isStatic;
+  if (isStaticEx) {
+    // Statico: salva solo secondi, peso sempre null
+    se.sets[numpadState.setIndex].weight = null;
+    se.sets[numpadState.setIndex].reps   = reps;
+  } else {
+    se.sets[numpadState.setIndex].weight = weightKg;
+    se.sets[numpadState.setIndex].reps   = reps;
+  }
+
+  // Ricalcola PR da zero (mai ottimisticamente)
   const prevPR = store.prRecords[numpadState.exerciseId];
-  if (!prevPR || maxNow > prevPR.weight) {
-    store.prRecords[numpadState.exerciseId] = { weight: maxNow, date: Date.now() };
-    if (prevPR && maxNow > prevPR.weight) showToast('🏆 Nuovo record personale!', 'success');
+  recomputePR(numpadState.exerciseId);
+  const newPR = store.prRecords[numpadState.exerciseId];
+  if (!isStaticEx && newPR && (!prevPR || newPR.weight > prevPR.weight) && prevPR) {
+    showToast('🏆 Nuovo record personale!', 'success');
   }
 
   saveStore();

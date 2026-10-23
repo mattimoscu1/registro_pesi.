@@ -2039,7 +2039,7 @@ function validateImportData(data) {
   if (!Array.isArray(data.sessions)) return 'Campo "sessions" non è un array.';
   if (typeof data.settings !== 'object' || data.settings === null) return 'Campo "settings" mancante.';
 
-  // Valida workouts
+  // Valida workouts — retrocompatibile con v1 (reps) e v2 (repsMin/repsMax)
   for (const w of data.workouts) {
     if (typeof w.id !== 'string') return 'Un workout ha id non valido.';
     if (typeof w.name !== 'string') return 'Un workout ha name non valido.';
@@ -2049,8 +2049,10 @@ function validateImportData(data) {
       if (typeof ex.id !== 'string') return 'Un esercizio ha id non valido.';
       if (typeof ex.name !== 'string') return 'Un esercizio ha name non valido.';
       if (typeof ex.sets !== 'number' || ex.sets < 1) return `Esercizio "${ex.name}": sets non valido.`;
-      if (typeof ex.reps !== 'number' || ex.reps < 1) return `Esercizio "${ex.name}": reps non valido.`;
-      if (typeof ex.increment !== 'number' || ex.increment < 0) return `Esercizio "${ex.name}": increment non valido.`;
+      // reps è opzionale (versioni nuove usano repsMin/repsMax)
+      // increment è opzionale (default 2.5)
+      if (ex.increment !== undefined && (typeof ex.increment !== 'number' || ex.increment < 0))
+        return `Esercizio "${ex.name}": increment non valido.`;
     }
   }
 
@@ -2061,11 +2063,11 @@ function validateImportData(data) {
     if (!Array.isArray(s.exercises)) return 'Una seduta ha exercises non valido.';
   }
 
-  // Valida unit
+  // Valida unit (opzionale)
   const unit = data.settings.unit;
   if (unit && unit !== 'kg' && unit !== 'lb') return 'Unità di misura non valida.';
 
-  // Valida theme
+  // Valida theme (opzionale)
   const theme = data.settings.theme;
   if (theme && !['dark','light','system'].includes(theme)) return 'Tema non valido.';
 
@@ -2115,6 +2117,20 @@ function importProfile(file) {
           // Assicura campi mancanti
           if (!store.prRecords) store.prRecords = {};
           if (!store.lastBackupReminder) store.lastBackupReminder = Date.now();
+          if (!store.settings) store.settings = {};
+          // Migrazione v1 → v2: converti reps in repsMin/repsMax
+          for (const wk of (store.workouts || [])) {
+            for (const ex of (wk.exercises || [])) {
+              if (ex.reps && !ex.repsMin) ex.repsMin = ex.reps;
+              if (ex.reps && !ex.repsMax) ex.repsMax = ex.reps;
+              if (!ex.type) ex.type = 'normal';
+              if (!ex.setupNote) ex.setupNote = '';
+              if (!ex.increment) ex.increment = 2.5;
+              if (!ex.progressEvery) ex.progressEvery = 4;
+            }
+          }
+          store.version = DATA_VERSION;
+          recomputeAllPRs();
           saveStore();
           applyTheme();
           navigate(currentScreen);

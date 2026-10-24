@@ -2165,14 +2165,40 @@ function sendNotification(title, body) {
 // ============================================================
 let progressAlerts = [];
 
+// Calcola automaticamente il giorno di progressione corrente per un esercizio
+// Doppia progressione: conta le sedute dall'ultima volta che il peso è cambiato
+// o dall'inizio se non è mai cambiato
+function computeProgressDay(ex, sessions) {
+  if (!sessions.length) return 0;
+
+  // Trova l'ultima seduta in cui TUTTE le serie avevano lo stesso peso
+  // (cioè la prima seduta del ciclo attuale)
+  const maxW = sessions.length > 0
+    ? Math.max(...(sessions[sessions.length-1].exercises
+        .find(e => e.exerciseId === ex.id)?.sets.map(s => s.weight || 0) || [0]))
+    : 0;
+
+  if (maxW <= 0) return sessions.length;
+
+  // Conta da quante sedute consecutive il peso massimo è lo stesso
+  let count = 0;
+  for (let i = sessions.length - 1; i >= 0; i--) {
+    const se = sessions[i].exercises.find(e => e.exerciseId === ex.id);
+    if (!se) break;
+    const w = Math.max(...se.sets.map(s => s.weight || 0));
+    if (w > 0 && Math.abs(w - maxW) < 0.01) count++;
+    else break;
+  }
+  return count;
+}
+
 function computeProgressAlerts() {
   progressAlerts = [];
   for (const workout of store.workouts) {
     for (const ex of workout.exercises) {
       const every   = ex.progressEvery || 4;
       const repsMax = ex.repsMax || ex.reps || 1;
-      // Usa il giorno manuale se impostato, altrimenti conta sedute automaticamente
-      const currentDay = ex.progressCurrentDay || null;
+      const inc     = ex.increment !== undefined && ex.increment !== null ? ex.increment : 2.5;
 
       const sessions = store.sessions
         .filter(s => {
@@ -2181,56 +2207,61 @@ function computeProgressAlerts() {
         })
         .sort((a, b) => a.date - b.date);
 
-      let isReady = false;
-      let currentMax = 0;
+      if (!sessions.length) continue;
 
-      if (currentDay !== null) {
-        // Modalità manuale: pronto se giorno corrente >= every
-        if (currentDay >= every && sessions.length > 0) {
-          const lastSess = sessions[sessions.length - 1];
-          const allAtMax = sessions.slice(-every).every(s => {
-            const se = s.exercises.find(e => e.exerciseId === ex.id);
-            if (!se || !se.sets || !se.sets.length) return false;
-            return se.sets.every(st => st.weight !== null && (st.reps || 0) >= repsMax);
-          });
-          if (allAtMax) {
-            currentMax = Math.max(...sessions.slice(-1)[0].exercises
-              .find(e => e.exerciseId === ex.id)?.sets.map(s => s.weight || 0) || [0]);
-            isReady = currentMax > 0;
-          }
-        }
-      } else {
-        // Modalità automatica: conta sedute consecutive
-        if (sessions.length < every) continue;
-        const last = sessions.slice(-every);
-        const allSeriesAtMax = last.every(s => {
-          const se = s.exercises.find(e => e.exerciseId === ex.id);
-          if (!se || !se.sets || !se.sets.length) return false;
-          return se.sets.every(st => st.weight !== null && (st.reps || 0) >= repsMax);
-        });
-        if (!allSeriesAtMax) continue;
-        const maxWeights = last.map(s => {
-          const se = s.exercises.find(e => e.exerciseId === ex.id);
-          if (!se || !se.sets.length) return 0;
-          return Math.max(...se.sets.map(st => st.weight || 0));
-        });
-        if (!maxWeights.every(w => w > 0 && w === maxWeights[0])) continue;
-        currentMax = maxWeights[0];
-        isReady = true;
+      // Giorno corrente: usa quello manuale se impostato, altrimenti automatico
+      const autoDay    = computeProgressDay(ex, sessions);
+      const currentDay = ex.progressCurrentDay !== undefined && ex.progressCurrentDay !== null
+        ? ex.progressCurrentDay
+        : autoDay;
+
+      // Aggiorna automaticamente il campo progressCurrentDay se non era impostato
+      if (ex.progressCurrentDay === undefined || ex.progressCurrentDay === null) {
+        ex.progressCurrentDay = autoDay;
       }
 
-      if (isReady && currentMax > 0) {
-        const suggested = +(currentMax + ((ex.increment !== undefined && ex.increment !== null ? ex.increment : 2.5))).toFixed(4);
+      const lastSess = sessions[sessions.length - 1];
+      const lastSe   = lastSess.exercises.find(e => e.exerciseId === ex.id);
+      if (!lastSe) continue;
+
+      // Doppia progressione: controlla che TUTTE le serie dell'ultima seduta
+      // abbiano raggiunto repsMax (pronte per progredire)
+      const allSeriesAtMax = lastSe.sets.every(st =>
+        st.weight !== null && (st.reps || 0) >= repsMax
+      );
+
+      const currentMax = Math.max(...lastSe.sets.map(s => s.weight || 0));
+      if (currentMax <= 0) continue;
+
+      // Pronto per aumentare: giorno >= every E tutte le serie a repsMax
+      if (currentDay >= every && allSeriesAtMax && inc > 0) {
+        const suggested = +(currentMax + inc).toFixed(4);
         progressAlerts.push({
           exerciseName: ex.name,
-          currentKg: currentMax,
+          currentKg:   currentMax,
           suggestedKg: suggested,
-          exerciseId: ex.id,
-          repsMax
+          exerciseId:  ex.id,
+          repsMax,
+          currentDay,
+          every
+        });
+      }
+      // Avviso a N-1: manca 1 seduta
+      else if (currentDay === every - 1 && allSeriesAtMax && inc > 0) {
+        progressAlerts.push({
+          exerciseName: ex.name,
+          currentKg:   currentMax,
+          suggestedKg: null, // non ancora
+          exerciseId:  ex.id,
+          repsMax,
+          currentDay,
+          every,
+          almostReady: true
         });
       }
     }
   }
+  saveStore(); // salva i progressCurrentDay aggiornati automaticamente
 }
 
 function checkProgressBanner() {
@@ -2239,22 +2270,29 @@ function checkProgressBanner() {
   const banner = document.getElementById('progress-banner');
   const text   = document.getElementById('progress-banner-text');
 
-  if (progressAlerts.length > 0) {
+  const readyAlerts  = progressAlerts.filter(a => !a.almostReady);
+  const almostAlerts = progressAlerts.filter(a => a.almostReady);
+
+  if (readyAlerts.length > 0) {
     badge.classList.add('visible');
     banner.classList.add('visible');
-    const alert = progressAlerts[0];
-    text.textContent = `${alert.exerciseName}: aumenta da ${kgToDisplay(alert.currentKg)} a ${kgToDisplay(alert.suggestedKg)} ${unitLabel()}`;
-    if (progressAlerts.length > 1) {
-      text.textContent += ` (+${progressAlerts.length - 1} altri)`;
-    }
-    // Notifica di sistema (solo extra)
+    const a = readyAlerts[0];
+    text.textContent = `${a.exerciseName}: aumenta da ${kgToDisplay(a.currentKg)} a ${kgToDisplay(a.suggestedKg)} ${unitLabel()}`;
+    if (readyAlerts.length > 1) text.textContent += ` (+${readyAlerts.length - 1} altri)`;
+
     if (store.settings.notificationsEnabled) {
-      sendNotification('Registro Pesi — Progredisci!',
-        `È ora di aumentare il peso per: ${progressAlerts.map(a => a.exerciseName).join(', ')}`);
+      sendNotification('💪 Registro Pesi — Aumenta il peso!',
+        readyAlerts.map(a => `${a.exerciseName}: passa a ${kgToDisplay(a.suggestedKg)} ${unitLabel()}`).join('\n'));
     }
   } else {
     badge.classList.remove('visible');
     banner.classList.remove('visible');
+  }
+
+  // Notifica "manca 1 seduta"
+  if (almostAlerts.length > 0 && store.settings.notificationsEnabled) {
+    sendNotification('⏰ Registro Pesi — Quasi pronto!',
+      almostAlerts.map(a => `${a.exerciseName}: ancora 1 seduta e potrai aumentare!`).join('\n'));
   }
 }
 
@@ -2540,32 +2578,42 @@ function getTodaySession() {
 }
 
 function getOrCreateTodaySession() {
+  // Prima cerca sessione esistente
   let sess = getTodaySession();
-  if (!sess) {
-    const wk = registroState.currentWorkout;
-    if (!wk) return null;
-    const activeDate = getActiveDate();
-    activeDate.setHours(12,0,0,0);
-    sess = {
-      id: uid(),
-      date: activeDate.getTime(),
-      workoutId: wk.id,
-      exercises: wk.exercises.map(ex => ({
-        exerciseId: ex.id,
-        sets: Array.from({ length: ex.sets }, () => ({
-          weight: null,
-          reps: ex.repsMax || ex.reps || 10,
-          note: ''
-        })),
-        note: ''
-      }))
-    };
-    store.sessions.push(sess);
-    saveStore();
-  }
-  return sess;
+  if (sess) return sess;
+
+  // NON crea la sessione qui — viene creata solo al primo inserimento peso
+  // Usa createSessionNow() quando l'utente inserisce effettivamente un dato
+  return null;
 }
 
+// Crea la sessione solo quando l'utente inserisce il primo dato
+function createSessionNow() {
+  let sess = getTodaySession();
+  if (sess) return sess;
+
+  const wk = registroState.currentWorkout;
+  if (!wk) return null;
+  const activeDate = getActiveDate();
+  activeDate.setHours(12,0,0,0);
+  sess = {
+    id: uid(),
+    date: activeDate.getTime(),
+    workoutId: wk.id,
+    exercises: wk.exercises.map(ex => ({
+      exerciseId: ex.id,
+      sets: Array.from({ length: ex.sets }, () => ({
+        weight: null,
+        reps: ex.repsMax || ex.reps || 10,
+        note: ''
+      })),
+      note: ''
+    }))
+  };
+  store.sessions.push(sess);
+  saveStore();
+  return sess;
+}
 // Ottieni sessione per una data specifica e un workout (senza crearla)
 function getSessionForDateAndWorkout(dateMs, workoutId) {
   const d = new Date(dateMs);
@@ -2742,16 +2790,8 @@ function renderRegistro() {
     return;
   }
 
-  const session = getOrCreateTodaySession();
-
-  // Se il giorno è già passato questa settimana, pre-compila con i pesi precedenti
-  // MA solo se la sessione è appena stata creata (tutti i pesi sono null)
-  if (session && !isActiveToday()) {
-    const isEmpty = session.exercises.every(se =>
-      se.sets.every(st => st.weight === null && (st.reps === null || st.reps === undefined))
-    );
-    if (isEmpty) preCompleteSession(session, registroState.currentWorkout);
-  }
+  // Leggi sessione esistente (NON crea una nuova — si crea solo al primo inserimento)
+  const session = getTodaySession();
 
   // allDone: considera anche statici (weight null OK per statici, conta solo reps)
   const allDone = session && session.exercises.every(se => {
@@ -2897,7 +2937,7 @@ function renderExerciseCard(ex, exIdx, session) {
     noteInput.placeholder = 'Es. "ultima rep sporca — non salire ancora"';
     noteInput.value = seData ? (seData.note || '') : '';
     noteInput.addEventListener('change', () => {
-      const sess = getOrCreateTodaySession();
+      const sess = getTodaySession() || createSessionNow();
       if (!sess) return;
       const se = sess.exercises.find(e => e.exerciseId === ex.id);
       if (se) { se.note = noteInput.value.trim(); saveStore(); }
@@ -3182,7 +3222,7 @@ document.getElementById('numpad-confirm').addEventListener('click', () => {
   }
 
   // Modalità normale (seduta di oggi)
-  const sess = numpadState.session || getOrCreateTodaySession();
+  const sess = numpadState.session || createSessionNow();
   if (!sess) return;
   const se = sess.exercises.find(e => e.exerciseId === numpadState.exerciseId);
   if (!se) return;
@@ -3964,6 +4004,11 @@ function renderStatExerciseCard(ex) {
 
   const consecutive = getConsecutiveSameSessions(ex.id);
   const pr = store.prRecords[ex.id];
+  // Giorno di progressione automatico
+  const autoDay    = computeProgressDay(ex, sessions);
+  const currentDay = ex.progressCurrentDay !== undefined && ex.progressCurrentDay !== null
+    ? ex.progressCurrentDay : autoDay;
+  const every      = ex.progressEvery || 4;
 
   const header = document.createElement('div');
   header.className = 'stat-exercise-header';
@@ -3984,11 +4029,26 @@ function renderStatExerciseCard(ex) {
     prBadge.textContent = `PR: ${kgToDisplay(pr.weight)} ${unitLabel()}`;
     badges.appendChild(prBadge);
   }
-  if (consecutive >= (ex.progressEvery || 4)) {
-    const warnBadge = document.createElement('span');
-    warnBadge.className = 'badge badge-warn';
-    warnBadge.textContent = `${consecutive}× stesso peso`;
-    badges.appendChild(warnBadge);
+
+  // Badge giorno progressione — sempre visibile
+  const inc = ex.increment !== undefined && ex.increment !== null ? ex.increment : 2.5;
+  if (inc > 0) {
+    const progBadge = document.createElement('span');
+    if (currentDay >= every) {
+      progBadge.className = 'badge badge-warn';
+      progBadge.textContent = `🔥 Giorno ${currentDay}/${every} — Aumenta!`;
+    } else if (currentDay === every - 1) {
+      progBadge.className = 'badge badge-warn';
+      progBadge.style.background = 'rgba(255,152,0,0.2)';
+      progBadge.style.color = 'var(--warn)';
+      progBadge.textContent = `⏰ Giorno ${currentDay}/${every} — Manca 1!`;
+    } else {
+      progBadge.className = 'badge badge-accent';
+      progBadge.style.background = 'var(--bg3)';
+      progBadge.style.color = 'var(--text2)';
+      progBadge.textContent = `Giorno ${currentDay}/${every}`;
+    }
+    badges.appendChild(progBadge);
   }
 
   const chevron = document.createElement('span');
@@ -4075,46 +4135,67 @@ function renderStatExerciseCard(ex) {
     body.appendChild(row);
   });
 
-  // Impostazione progressione
+  // Giorno di progressione
   const progDiv = document.createElement('div');
   progDiv.className = 'divider';
   body.appendChild(progDiv);
 
-  // Giorno di progressione attuale (manuale)
+  // Mostra giorno automatico + campo manuale override
+  const progInfoRow = document.createElement('div');
+  progInfoRow.style.cssText = 'display:flex;align-items:center;gap:10px;margin-top:10px;margin-bottom:6px;';
+  const progAutoLbl = document.createElement('span');
+  progAutoLbl.className = 'text-sm text-muted';
+  progAutoLbl.style.flex = '1';
+  progAutoLbl.textContent = `Giorno automatico: ${autoDay} su ${every}`;
+  progInfoRow.appendChild(progAutoLbl);
+  body.appendChild(progInfoRow);
+
+  // Campo override manuale
   const currDayRow = document.createElement('div');
-  currDayRow.style.cssText = 'display:flex;align-items:center;gap:10px;margin-top:10px;margin-bottom:8px;';
+  currDayRow.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:8px;';
   const currDayLabel = document.createElement('span');
   currDayLabel.className = 'text-sm text-muted';
   currDayLabel.style.flex = '1';
-  currDayLabel.textContent = 'Sono al giorno:';
+  currDayLabel.textContent = 'Override manuale:';
   const currDayInput = document.createElement('input');
   currDayInput.type = 'number';
-  currDayInput.min = '1';
-  currDayInput.max = String(ex.progressEvery || 4);
-  currDayInput.value = ex.progressCurrentDay || 1;
+  currDayInput.min = '0';
+  currDayInput.max = String(every);
+  currDayInput.value = currentDay;
   currDayInput.className = 'input-field';
   currDayInput.style.cssText = 'width:70px;text-align:center;padding:8px;';
   currDayInput.setAttribute('inputmode', 'numeric');
   const currDayOf = document.createElement('span');
   currDayOf.className = 'text-sm text-muted';
-  currDayOf.textContent = `di ${ex.progressEvery || 4}`;
+  currDayOf.textContent = `di ${every}`;
   currDayInput.addEventListener('change', () => {
     const v = parseInt(currDayInput.value);
-    const max = ex.progressEvery || 4;
-    if (!isNaN(v) && v >= 1 && v <= max) {
+    if (!isNaN(v) && v >= 0) {
       ex.progressCurrentDay = v;
+      currDayOf.textContent = `di ${every}`;
       saveStore();
       checkProgressBanner();
-    } else {
-      currDayInput.value = ex.progressCurrentDay || 1;
-    }
+    } else currDayInput.value = currentDay;
+  });
+  // Reset automatico
+  const resetDayBtn = document.createElement('button');
+  resetDayBtn.className = 'btn btn-ghost btn-sm';
+  resetDayBtn.style.cssText = 'font-size:11px;padding:4px 8px;';
+  resetDayBtn.textContent = '↺ Auto';
+  resetDayBtn.title = 'Usa il valore automatico';
+  resetDayBtn.addEventListener('click', () => {
+    ex.progressCurrentDay = null;
+    currDayInput.value = autoDay;
+    saveStore();
+    checkProgressBanner();
+    showToast('Progressione automatica ripristinata', 'success');
   });
   currDayRow.appendChild(currDayLabel);
   currDayRow.appendChild(currDayInput);
   currDayRow.appendChild(currDayOf);
+  currDayRow.appendChild(resetDayBtn);
   body.appendChild(currDayRow);
 
-  // Progredisci ogni N sedute
   const progRow = document.createElement('div');
   progRow.style.cssText = 'display:flex;align-items:center;gap:10px;margin-top:6px;';
   const progLabel = document.createElement('span');
@@ -4125,7 +4206,7 @@ function renderStatExerciseCard(ex) {
   progInput.type = 'number';
   progInput.min = '1';
   progInput.max = '20';
-  progInput.value = ex.progressEvery || 4;
+  progInput.value = every;
   progInput.className = 'input-field';
   progInput.style.cssText = 'width:70px;text-align:center;padding:8px;';
   progInput.setAttribute('inputmode', 'numeric');
@@ -4133,18 +4214,11 @@ function renderStatExerciseCard(ex) {
     const v = parseInt(progInput.value);
     if (!isNaN(v) && v >= 1) {
       ex.progressEvery = v;
-      currDayInput.max = String(v);
       currDayOf.textContent = `di ${v}`;
-      // Aggiusta giorno corrente se supera il nuovo massimo
-      if ((ex.progressCurrentDay || 1) > v) {
-        ex.progressCurrentDay = v;
-        currDayInput.value = v;
-      }
+      currDayInput.max = String(v);
       saveStore();
       checkProgressBanner();
-    } else {
-      progInput.value = ex.progressEvery || 4;
-    }
+    } else progInput.value = every;
   });
   progRow.appendChild(progLabel);
   progRow.appendChild(progInput);

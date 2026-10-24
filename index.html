@@ -1385,6 +1385,55 @@ select.input-field {
 .stat-list-day.warn   { color: var(--warn); }
 .stat-list-day.almost { color: var(--warn); opacity: 0.7; }
 
+/* Preset progressione colorati */
+.preset-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+}
+.stat-list-item.preset-colored {
+  border-left-width: 4px;
+}
+
+/* Sezione PR collassabile */
+.pr-section-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.pr-section-title { font-size: 17px; font-weight: 700; flex: 1; }
+.pr-section-count {
+  font-size: 12px;
+  background: var(--bg3);
+  border-radius: 999px;
+  padding: 3px 10px;
+  color: var(--text2);
+  font-weight: 700;
+}
+.pr-section-body { display: none; }
+.pr-section-body.open { display: block; }
+
+/* Color picker inline */
+.color-options {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+.color-opt {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 3px solid transparent;
+  transition: border-color 0.15s;
+  flex-shrink: 0;
+}
+.color-opt.selected { border-color: var(--text); }
+
 /* Toggle "non conta" nelle card storico */
 .sess-exclude-row {
   display: flex;
@@ -1729,9 +1778,10 @@ const DAYS_SHORT = ['Dom','Lun','Mar','Mer','Gio','Ven','Sab'];
 //   version: number,
 //   profile: { name, disclaimerAccepted, setupDone },
 //   settings: { theme, unit, backupReminderDays, notificationsEnabled },
-//   workouts: [{ id, name, days:[0-6], exercises:[{ id, name, sets, repsMin, repsMax, increment, progressEvery }] }],
-//   sessions: [{ id, date, workoutId, exercises:[{ exerciseId, sets:[{ weight, reps, note }], note }] }],
+//   workouts: [{ id, name, days:[0-6], exercises:[{ id, name, sets, repsMin, repsMax, increment, progressEvery, progressionPresetId }] }],
+//   sessions: [{ id, date, workoutId, excludeFromProgress, exercises:[{ exerciseId, sets:[{ weight, reps, note }], note }] }],
 //   prRecords: { [exerciseId]: { weight, date } },
+//   progressionPresets: [{ id, name, color }],
 //   lastBackupReminder: timestamp
 // }
 
@@ -1776,6 +1826,7 @@ function makeDefaultStore() {
     workouts: [],
     sessions: [],
     prRecords: {},
+    progressionPresets: [],
     lastBackupReminder: Date.now()
   };
 }
@@ -3908,15 +3959,42 @@ function renderStats() {
   container.innerHTML = '';
 
   computeProgressAlerts();
+  // Assicura che progressionPresets esista
+  if (!store.progressionPresets) store.progressionPresets = [];
 
-  // === SEZIONE PR compatta ===
+  // === SEZIONE PR — collassabile ===
   const prEntries = Object.entries(store.prRecords).filter(([id, pr]) => pr && pr.weight > 0);
-  if (prEntries.length > 0) {
-    const prHeader = document.createElement('div');
-    prHeader.className = 'section-header';
-    prHeader.textContent = '🏆 Record Personali';
-    container.appendChild(prHeader);
+  const prSection = document.createElement('div');
+  prSection.style.cssText = 'margin-bottom:4px;';
 
+  const prSectionHeader = document.createElement('div');
+  prSectionHeader.className = 'pr-section-header';
+
+  const prTitle = document.createElement('span');
+  prTitle.className = 'pr-section-title';
+  prTitle.textContent = '🏆 Record Personali';
+
+  const prCount = document.createElement('span');
+  prCount.className = 'pr-section-count';
+  prCount.textContent = prEntries.length > 0 ? prEntries.length : '—';
+
+  const prChev = document.createElement('span');
+  prChev.style.cssText = 'color:var(--text3);transition:transform 0.2s;font-size:16px;';
+  prChev.textContent = '›';
+
+  prSectionHeader.appendChild(prTitle);
+  prSectionHeader.appendChild(prCount);
+  prSectionHeader.appendChild(prChev);
+
+  const prBody = document.createElement('div');
+  prBody.className = 'pr-section-body';
+
+  prSectionHeader.addEventListener('click', () => {
+    prBody.classList.toggle('open');
+    prChev.style.transform = prBody.classList.contains('open') ? 'rotate(90deg)' : '';
+  });
+
+  if (prEntries.length > 0) {
     const prList = document.createElement('div');
     prList.className = 'stat-list';
     prEntries.sort((a, b) => b[1].weight - a[1].weight).forEach(([exId, pr]) => {
@@ -3934,8 +4012,17 @@ function renderStats() {
       row.appendChild(val);
       prList.appendChild(row);
     });
-    container.appendChild(prList);
+    prBody.appendChild(prList);
+  } else {
+    const empty = document.createElement('p');
+    empty.style.cssText = 'padding:0 16px 12px;font-size:13px;color:var(--text3);';
+    empty.textContent = 'Nessun record ancora.';
+    prBody.appendChild(empty);
   }
+
+  prSection.appendChild(prSectionHeader);
+  prSection.appendChild(prBody);
+  container.appendChild(prSection);
 
   // === SEZIONE PROGRESSIONE — lista compatta ===
   const allExercises = store.workouts.flatMap(w => w.exercises);
@@ -3983,35 +4070,59 @@ function renderStats() {
 
     const item = document.createElement('div');
     item.className = 'stat-list-item';
-    if (alert && !alert.almostReady) item.classList.add('warn-border');
+    item.style.cursor = 'pointer';
 
-    const name = document.createElement('span');
-    name.className = 'stat-list-name';
-    name.textContent = ex.name;
-
-    const dayLbl = document.createElement('span');
-    dayLbl.className = 'stat-list-day';
-
-    if (inc === 0) {
-      dayLbl.textContent = '∞ nessuna prog.';
+    // Colore preset
+    const preset = store.progressionPresets.find(p => p.id === ex.progressionPresetId);
+    if (preset) {
+      item.style.borderLeft = `4px solid ${preset.color}`;
     } else if (alert && !alert.almostReady) {
-      dayLbl.textContent = `� ${currentDay}/${every} — Aumenta!`;
-      dayLbl.classList.add('warn');
-    } else if (alert && alert.almostReady) {
-      dayLbl.textContent = `⏰ ${currentDay}/${every} — Manca 1`;
-      dayLbl.classList.add('almost');
-    } else {
-      dayLbl.textContent = `${currentDay}/${every}`;
+      item.classList.add('warn-border');
     }
 
-    item.appendChild(name);
+    // Punto colorato preset (se assegnato)
+    const leftCol = document.createElement('div');
+    leftCol.style.cssText = 'display:flex;align-items:center;gap:8px;flex:1;min-width:0;';
+    if (preset) {
+      const dot = document.createElement('span');
+      dot.className = 'preset-dot';
+      dot.style.background = preset.color;
+      dot.title = preset.name;
+      leftCol.appendChild(dot);
+    }
+    const name = document.createElement('span');
+    name.className = 'stat-list-name';
+    name.style.overflow = 'hidden';
+    name.style.textOverflow = 'ellipsis';
+    name.style.whiteSpace = 'nowrap';
+    name.textContent = ex.name;
+    leftCol.appendChild(name);
+
+    // Giorno — solo numero, niente /N
+    const dayLbl = document.createElement('span');
+    dayLbl.className = 'stat-list-day';
+    dayLbl.style.cssText = 'font-size:18px;font-weight:800;min-width:28px;text-align:right;flex-shrink:0;';
+    if (inc === 0) {
+      dayLbl.textContent = '∞';
+      dayLbl.style.fontSize = '14px';
+    } else if (alert && !alert.almostReady) {
+      dayLbl.textContent = String(currentDay);
+      dayLbl.style.color = 'var(--warn)';
+    } else if (alert && alert.almostReady) {
+      dayLbl.textContent = String(currentDay);
+      dayLbl.style.color = 'var(--warn)';
+      dayLbl.style.opacity = '0.7';
+    } else {
+      dayLbl.textContent = String(currentDay);
+    }
+
+    item.appendChild(leftCol);
     item.appendChild(dayLbl);
 
     // Click → apre dettaglio esercizio (card espandibile)
     item.addEventListener('click', () => {
       const existing = container.querySelector(`.stat-detail[data-exid="${ex.id}"]`);
       if (existing) { existing.remove(); return; }
-      // Rimuovi altri dettagli aperti
       container.querySelectorAll('.stat-detail').forEach(d => d.remove());
       const detail = renderStatExerciseDetail(ex, sessions, currentDay, autoDay, every, alert);
       detail.dataset.exid = ex.id;
@@ -4021,8 +4132,6 @@ function renderStats() {
 
     statList.appendChild(item);
   });
-
-  container.appendChild(statList);
 
   container.appendChild(statList);
 
@@ -4162,7 +4271,7 @@ function renderStatExerciseDetail(ex, sessions, currentDay, autoDay, every, aler
     const detLbl = document.createElement('div');
     detLbl.className = 'text-sm text-muted';
     detLbl.style.marginBottom = '6px';
-    div.appendChild(detLbl);
+   div.appendChild(detLbl);
     sessions.slice(-5).reverse().forEach(sess => {
       const se = sess.exercises.find(e => e.exerciseId === ex.id);
       if (!se) return;
@@ -4179,6 +4288,128 @@ function renderStatExerciseDetail(ex, sessions, currentDay, autoDay, every, aler
   }
 
   div.appendChild(document.createElement('div')).className = 'divider';
+
+  // === SEZIONE PRESET METODO DI PROGRESSIONE ===
+  const presetSection = document.createElement('div');
+  presetSection.style.cssText = 'margin-top:12px;';
+
+  const presetTitle = document.createElement('div');
+  presetTitle.className = 'text-xs text-muted';
+  presetTitle.style.cssText = 'font-weight:700;margin-bottom:8px;letter-spacing:0.5px;';
+  presetTitle.textContent = 'METODO DI PROGRESSIONE';
+  presetSection.appendChild(presetTitle);
+
+  // Lista preset esistenti + assegnazione
+  const presetList = document.createElement('div');
+  presetList.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;';
+
+  // Opzione "nessuno"
+  const noneOpt = document.createElement('button');
+  noneOpt.style.cssText = `padding:5px 12px;border-radius:999px;font-size:12px;font-weight:600;cursor:pointer;border:1.5px solid var(--border);background:${!ex.progressionPresetId ? 'var(--accent)' : 'var(--bg3)'};color:${!ex.progressionPresetId ? '#fff' : 'var(--text2)'};`;
+  noneOpt.textContent = 'Nessuno';
+  noneOpt.addEventListener('click', () => {
+    ex.progressionPresetId = null;
+    saveStore();
+    renderStats();
+  });
+  presetList.appendChild(noneOpt);
+
+  // Preset esistenti
+  (store.progressionPresets || []).forEach(p => {
+    const btn = document.createElement('button');
+    const isActive = ex.progressionPresetId === p.id;
+    btn.style.cssText = `padding:5px 12px;border-radius:999px;font-size:12px;font-weight:700;cursor:pointer;border:1.5px solid ${p.color};background:${isActive ? p.color : 'transparent'};color:${isActive ? '#fff' : p.color};display:flex;align-items:center;gap:5px;`;
+    btn.textContent = p.name;
+    btn.addEventListener('click', () => {
+      ex.progressionPresetId = isActive ? null : p.id;
+      saveStore();
+      renderStats();
+    });
+    // Tasto elimina preset (solo se non usato da altri)
+    const delBtn = document.createElement('span');
+    delBtn.style.cssText = 'font-size:14px;opacity:0.6;line-height:1;margin-left:2px;';
+    delBtn.textContent = '×';
+    delBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      // Rimuovi preset da tutti gli esercizi
+      store.workouts.forEach(w => w.exercises.forEach(ex => {
+        if (ex.progressionPresetId === p.id) ex.progressionPresetId = null;
+      }));
+      store.progressionPresets = store.progressionPresets.filter(pp => pp.id !== p.id);
+      saveStore();
+      renderStats();
+    });
+    btn.appendChild(delBtn);
+    presetList.appendChild(btn);
+  });
+
+  presetSection.appendChild(presetList);
+
+  // Crea nuovo preset
+  const COLORS = ['#f59e0b','#10b981','#3b82f6','#ef4444','#8b5cf6','#ec4899','#06b6d4','#84cc16'];
+  let newPresetColor = COLORS[0];
+
+  const newPresetWrap = document.createElement('div');
+  newPresetWrap.style.cssText = 'background:var(--bg3);border-radius:var(--radius-xs);padding:10px;';
+
+  const newPresetLbl = document.createElement('div');
+  newPresetLbl.className = 'text-xs text-muted';
+  newPresetLbl.style.cssText = 'margin-bottom:6px;font-weight:700;';
+  newPresetLbl.textContent = '+ Nuovo metodo';
+  newPresetWrap.appendChild(newPresetLbl);
+
+  const newPresetRow = document.createElement('div');
+  newPresetRow.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:8px;';
+
+  const nameInp = document.createElement('input');
+  nameInp.type = 'text';
+  nameInp.placeholder = 'Es. Doppia progressione';
+  nameInp.className = 'input-field';
+  nameInp.style.cssText = 'flex:1;font-size:13px;padding:8px 10px;';
+  nameInp.maxLength = 30;
+
+  const addPresetBtn = document.createElement('button');
+  addPresetBtn.className = 'btn btn-primary btn-sm';
+  addPresetBtn.textContent = 'Crea';
+  addPresetBtn.addEventListener('click', () => {
+    const n = nameInp.value.trim();
+    if (!n) { showToast('Inserisci un nome', 'warn'); return; }
+    const preset = { id: uid(), name: n, color: newPresetColor };
+    if (!store.progressionPresets) store.progressionPresets = [];
+    store.progressionPresets.push(preset);
+    // Assegna subito all'esercizio corrente
+    ex.progressionPresetId = preset.id;
+    saveStore();
+    renderStats();
+  });
+
+  newPresetRow.appendChild(nameInp);
+  newPresetRow.appendChild(addPresetBtn);
+  newPresetWrap.appendChild(newPresetRow);
+
+  // Scelta colore
+  const colorRow = document.createElement('div');
+  colorRow.className = 'color-options';
+  COLORS.forEach(c => {
+    const dot = document.createElement('div');
+    dot.className = 'color-opt';
+    if (c === newPresetColor) dot.classList.add('selected');
+    dot.style.background = c;
+    dot.addEventListener('click', () => {
+      newPresetColor = c;
+      colorRow.querySelectorAll('.color-opt').forEach(d => d.classList.remove('selected'));
+      dot.classList.add('selected');
+    });
+    colorRow.appendChild(dot);
+  });
+  newPresetWrap.appendChild(colorRow);
+  presetSection.appendChild(newPresetWrap);
+  div.appendChild(presetSection);
+
+  const dividerEl = document.createElement('div');
+  dividerEl.className = 'divider';
+  dividerEl.style.marginTop = '12px';
+  div.appendChild(dividerEl);
 
   // Controlli progressione
   const ctrlGrid = document.createElement('div');

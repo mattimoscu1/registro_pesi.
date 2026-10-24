@@ -1359,6 +1359,55 @@ select.input-field {
   font-weight: 700;
 }
 
+/* Stats menu semplice — lista esercizi con badge inline */
+.stat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 8px;
+}
+.stat-list-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+.stat-list-item:active { background: var(--surface2); }
+.stat-list-item.warn-border { border-left: 3px solid var(--warn); }
+.stat-list-item.pr-border   { border-left: 3px solid var(--pr-gold); }
+.stat-list-name { flex: 1; font-size: 14px; font-weight: 600; }
+.stat-list-day  { font-size: 11px; font-weight: 700; color: var(--text3); white-space: nowrap; }
+.stat-list-day.warn   { color: var(--warn); }
+.stat-list-day.almost { color: var(--warn); opacity: 0.7; }
+
+/* Toggle "non conta" nelle card storico */
+.sess-exclude-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+}
+.sess-exclude-lbl {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text3);
+}
+.sess-excluded-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-weight: 700;
+}
+
 /* Confirmation overlay (per eliminazioni) */
 .confirm-row {
   display: flex;
@@ -1521,18 +1570,18 @@ select.input-field {
       </svg>
       <span class="nav-label">Setup</span>
     </button>
-    <button class="nav-btn" data-screen="storico" aria-label="Storico Allenamenti">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-      </svg>
-      <span class="nav-label">Storico</span>
-    </button>
     <button class="nav-btn" data-screen="stats" aria-label="Statistiche">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
       </svg>
       <span class="nav-label">Stats</span>
       <span class="nav-badge" id="stats-badge"></span>
+    </button>
+    <button class="nav-btn" data-screen="storico" aria-label="Storico Allenamenti">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+      </svg>
+      <span class="nav-label">Storico</span>
     </button>
     <button class="nav-btn" data-screen="timer" aria-label="Timer">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -2165,29 +2214,28 @@ function sendNotification(title, body) {
 // ============================================================
 let progressAlerts = [];
 
-// Calcola automaticamente il giorno di progressione corrente per un esercizio
-// Doppia progressione: conta le sedute dall'ultima volta che il peso è cambiato
-// o dall'inizio se non è mai cambiato
+// Calcola automaticamente il giorno di progressione corrente per un esercizio.
+// Logica doppia progressione:
+// - Conta le sedute consecutive in cui il PESO MASSIMO è uguale all'ultima seduta
+// - Le sedute con pesi misti tra serie (tecnica diversa, scalata) non vengono conteggiate
+//   perché il max è diverso da quello del ciclo corrente
 function computeProgressDay(ex, sessions) {
   if (!sessions.length) return 0;
 
-  // Trova l'ultima seduta in cui TUTTE le serie avevano lo stesso peso
-  // (cioè la prima seduta del ciclo attuale)
-  const maxW = sessions.length > 0
-    ? Math.max(...(sessions[sessions.length-1].exercises
-        .find(e => e.exerciseId === ex.id)?.sets.map(s => s.weight || 0) || [0]))
-    : 0;
+  // Peso massimo dell'ultima seduta = peso target del ciclo attuale
+  const lastSe = sessions[sessions.length-1].exercises.find(e => e.exerciseId === ex.id);
+  if (!lastSe || !lastSe.sets.length) return 0;
+  const maxW = Math.max(...lastSe.sets.map(s => s.weight || 0));
+  if (maxW <= 0) return 0;
 
-  if (maxW <= 0) return sessions.length;
-
-  // Conta da quante sedute consecutive il peso massimo è lo stesso
+  // Conta all'indietro quante sedute consecutive hanno lo stesso maxW
   let count = 0;
   for (let i = sessions.length - 1; i >= 0; i--) {
     const se = sessions[i].exercises.find(e => e.exerciseId === ex.id);
     if (!se) break;
     const w = Math.max(...se.sets.map(s => s.weight || 0));
     if (w > 0 && Math.abs(w - maxW) < 0.01) count++;
-    else break;
+    else break; // peso diverso → fine del ciclo attuale
   }
   return count;
 }
@@ -3738,6 +3786,29 @@ function renderSessionCard(sess) {
     body.appendChild(exDiv);
   });
 
+  // Toggle "non conta per la progressione"
+  const excludeRow = document.createElement('div');
+  excludeRow.className = 'sess-exclude-row';
+  const excludeLbl = document.createElement('span');
+  excludeLbl.className = 'sess-exclude-lbl';
+  excludeLbl.textContent = 'Non contare per la progressione';
+  const excludeToggle = createToggle(!!sess.excludeFromProgress, checked => {
+    sess.excludeFromProgress = checked;
+    saveStore();
+    checkProgressBanner();
+    // Aggiorna badge
+    const badge = excludeRow.querySelector('.sess-excluded-badge');
+    if (badge) badge.style.display = checked ? '' : 'none';
+  });
+  const excludedBadge = document.createElement('span');
+  excludedBadge.className = 'sess-excluded-badge';
+  excludedBadge.textContent = 'ESCLUSA';
+  excludedBadge.style.display = sess.excludeFromProgress ? '' : 'none';
+  excludeRow.appendChild(excludeLbl);
+  excludeRow.appendChild(excludedBadge);
+  excludeRow.appendChild(excludeToggle);
+  body.appendChild(excludeRow);
+
   card.appendChild(body);
   return card;
 }
@@ -3838,7 +3909,7 @@ function renderStats() {
 
   computeProgressAlerts();
 
-  // PR Records
+  // === SEZIONE PR compatta ===
   const prEntries = Object.entries(store.prRecords).filter(([id, pr]) => pr && pr.weight > 0);
   if (prEntries.length > 0) {
     const prHeader = document.createElement('div');
@@ -3846,68 +3917,27 @@ function renderStats() {
     prHeader.textContent = '🏆 Record Personali';
     container.appendChild(prHeader);
 
-    prEntries
-      .sort((a, b) => b[1].weight - a[1].weight)
-      .forEach(([exId, pr]) => {
-        const exDef = findExercise(exId);
-        if (!exDef) return;
-        const prCard = document.createElement('div');
-        prCard.className = 'pr-card';
-        prCard.innerHTML = '';
-        const icon = document.createElement('div');
-        icon.className = 'pr-icon';
-        icon.textContent = '🏆';
-        const info = document.createElement('div');
-        info.className = 'pr-info';
-        const exName = document.createElement('div');
-        exName.className = 'pr-exercise';
-        exName.textContent = exDef.name;
-        const prVal = document.createElement('div');
-        prVal.className = 'pr-value';
-        prVal.textContent = `${kgToDisplay(pr.weight)} ${unitLabel()}`;
-        const prDate = document.createElement('div');
-        prDate.className = 'pr-date';
-        prDate.textContent = formatDate(pr.date);
-        info.appendChild(exName);
-        info.appendChild(prVal);
-        info.appendChild(prDate);
-        prCard.appendChild(icon);
-        prCard.appendChild(info);
-        container.appendChild(prCard);
-      });
-  }
-
-  // Avvisi progressione
-  if (progressAlerts.length > 0) {
-    const warnHeader = document.createElement('div');
-    warnHeader.className = 'section-header';
-    warnHeader.textContent = '⚡ Da progredire';
-    container.appendChild(warnHeader);
-
-    progressAlerts.forEach(alert => {
-      const card = document.createElement('div');
-      card.className = 'card';
-      card.style.marginBottom = '10px';
-      card.innerHTML = '';
-      const title = document.createElement('div');
-      title.className = 'card-title';
-      title.textContent = alert.exerciseName;
-      const desc = document.createElement('div');
-      desc.className = 'text-sm text-muted';
-      desc.textContent = `Peso attuale: ${kgToDisplay(alert.currentKg)} ${unitLabel()} → Suggerimento: ${kgToDisplay(alert.suggestedKg)} ${unitLabel()}`;
-      const badge = document.createElement('span');
-      badge.className = 'badge badge-warn';
-      badge.style.marginTop = '8px';
-      badge.style.display = 'inline-block';
-      badge.textContent = 'Aumenta il peso!';
-      card.appendChild(title);
-      card.appendChild(desc);
-      card.appendChild(badge);
-      container.appendChild(card);
+    const prList = document.createElement('div');
+    prList.className = 'stat-list';
+    prEntries.sort((a, b) => b[1].weight - a[1].weight).forEach(([exId, pr]) => {
+      const exDef = findExercise(exId);
+      if (!exDef) return;
+      const row = document.createElement('div');
+      row.className = 'stat-list-item pr-border';
+      const name = document.createElement('span');
+      name.className = 'stat-list-name';
+      name.textContent = exDef.name;
+      const val = document.createElement('span');
+      val.style.cssText = 'font-size:14px;font-weight:800;color:var(--pr-gold);white-space:nowrap;';
+      val.textContent = `${kgToDisplay(pr.weight)} ${unitLabel()}`;
+      row.appendChild(name);
+      row.appendChild(val);
+      prList.appendChild(row);
     });
+    container.appendChild(prList);
   }
 
-  // Statistiche per esercizio
+  // === SEZIONE PROGRESSIONE — lista compatta ===
   const allExercises = store.workouts.flatMap(w => w.exercises);
   if (allExercises.length === 0) {
     container.innerHTML += `
@@ -3921,20 +3951,244 @@ function renderStats() {
 
   const statHeader = document.createElement('div');
   statHeader.className = 'section-header';
-  statHeader.textContent = '📈 Progressione per esercizio';
+  statHeader.textContent = '📈 Progressione';
   container.appendChild(statHeader);
 
-  // Ordina: prima esercizi "stagnanti" (stesso peso per più sedute consecutive)
+  const statList = document.createElement('div');
+  statList.className = 'stat-list';
+
+  // Ordina: prima chi ha alert (pronto o quasi), poi per giorno desc
   const sortedExercises = [...allExercises].sort((a, b) => {
-    const stagnantA = getConsecutiveSameSessions(a.id);
-    const stagnantB = getConsecutiveSameSessions(b.id);
-    return stagnantB - stagnantA;
+    const aAlert = progressAlerts.find(p => p.exerciseId === a.id);
+    const bAlert = progressAlerts.find(p => p.exerciseId === b.id);
+    const aScore = aAlert ? (aAlert.almostReady ? 1 : 2) : 0;
+    const bScore = bAlert ? (bAlert.almostReady ? 1 : 2) : 0;
+    if (bScore !== aScore) return bScore - aScore;
+    return (b.progressCurrentDay || 0) - (a.progressCurrentDay || 0);
   });
 
   sortedExercises.forEach(ex => {
-    const card = renderStatExerciseCard(ex);
-    if (card) container.appendChild(card);
+    const workoutId  = getWorkoutIdForExercise(ex.id);
+    const sessions   = store.sessions
+      .filter(s => workoutId ? s.workoutId === workoutId : true)
+      .filter(s => isSessionValid(s, ex.id))
+      .sort((a, b) => a.date - b.date);
+
+    const inc        = ex.increment !== undefined && ex.increment !== null ? ex.increment : 2.5;
+    const every      = ex.progressEvery || 4;
+    const autoDay    = computeProgressDay(ex, sessions);
+    const currentDay = ex.progressCurrentDay !== undefined && ex.progressCurrentDay !== null
+      ? ex.progressCurrentDay : autoDay;
+    const alert      = progressAlerts.find(p => p.exerciseId === ex.id);
+
+    const item = document.createElement('div');
+    item.className = 'stat-list-item';
+    if (alert && !alert.almostReady) item.classList.add('warn-border');
+
+    const name = document.createElement('span');
+    name.className = 'stat-list-name';
+    name.textContent = ex.name;
+
+    const dayLbl = document.createElement('span');
+    dayLbl.className = 'stat-list-day';
+
+    if (inc === 0) {
+      dayLbl.textContent = '∞ nessuna prog.';
+    } else if (alert && !alert.almostReady) {
+      dayLbl.textContent = `� ${currentDay}/${every} — Aumenta!`;
+      dayLbl.classList.add('warn');
+    } else if (alert && alert.almostReady) {
+      dayLbl.textContent = `⏰ ${currentDay}/${every} — Manca 1`;
+      dayLbl.classList.add('almost');
+    } else {
+      dayLbl.textContent = `${currentDay}/${every}`;
+    }
+
+    item.appendChild(name);
+    item.appendChild(dayLbl);
+
+    // Click → apre dettaglio esercizio (card espandibile)
+    item.addEventListener('click', () => {
+      const existing = container.querySelector(`.stat-detail[data-exid="${ex.id}"]`);
+      if (existing) { existing.remove(); return; }
+      // Rimuovi altri dettagli aperti
+      container.querySelectorAll('.stat-detail').forEach(d => d.remove());
+      const detail = renderStatExerciseDetail(ex, sessions, currentDay, autoDay, every, alert);
+      detail.dataset.exid = ex.id;
+      item.after(detail);
+      detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+
+    statList.appendChild(item);
   });
+
+  container.appendChild(statList);
+}
+
+// Pannello dettaglio esercizio nelle stats (si apre sotto la riga)
+function renderStatExerciseDetail(ex, sessions, currentDay, autoDay, every, alert) {
+  const div = document.createElement('div');
+  div.className = 'stat-exercise-body';
+  div.style.cssText = `
+    background:var(--surface);border:1px solid var(--border);
+    border-radius:var(--radius-sm);margin:2px 0 4px;padding:14px;
+  `;
+
+  const inc = ex.increment !== undefined && ex.increment !== null ? ex.increment : 2.5;
+  const pr  = store.prRecords[ex.id];
+
+  // Alert in cima se pronto
+  if (alert && !alert.almostReady) {
+    const alertBox = document.createElement('div');
+    alertBox.style.cssText = 'background:rgba(255,152,0,0.15);border:1.5px solid var(--warn);border-radius:var(--radius-xs);padding:10px 12px;margin-bottom:12px;font-size:13px;font-weight:600;color:var(--warn);';
+    alertBox.textContent = `🔥 Aumenta a ${kgToDisplay(alert.suggestedKg)} ${unitLabel()}!`;
+    div.appendChild(alertBox);
+  } else if (alert && alert.almostReady) {
+    const alertBox = document.createElement('div');
+    alertBox.style.cssText = 'background:rgba(255,152,0,0.08);border:1.5px solid rgba(255,152,0,0.4);border-radius:var(--radius-xs);padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--warn);';
+    alertBox.textContent = `⏰ Manca 1 seduta per aumentare il peso!`;
+    div.appendChild(alertBox);
+  }
+
+  // Grafico a barre
+  if (sessions.length > 0) {
+    const maxWeights = sessions.map(s => getMaxWeight(s, ex.id));
+    const chartMax   = Math.max(...maxWeights, 1);
+    const barChart   = document.createElement('div');
+    barChart.className = 'bar-chart';
+    barChart.style.marginBottom = '10px';
+    sessions.slice(-10).forEach((sess, i, arr) => {
+      const w   = getMaxWeight(sess, ex.id);
+      const col = document.createElement('div');
+      col.className = 'bar-col';
+      const bar = document.createElement('div');
+      bar.className = 'bar';
+      if (pr && w >= pr.weight) bar.classList.add('pr-bar');
+      // Seduta esclusa → barra grigia
+      if (sess.excludeFromProgress) { bar.style.background = 'var(--text3)'; bar.style.opacity = '0.4'; }
+      bar.style.height = `${Math.max(4, Math.round((w / chartMax) * 70))}px`;
+      bar.title = `${kgToDisplay(w)} ${unitLabel()}`;
+      const lbl = document.createElement('div');
+      lbl.className = 'bar-label';
+      const d = new Date(sess.date);
+      lbl.textContent = `${d.getDate()}/${d.getMonth()+1}`;
+      col.appendChild(bar);
+      col.appendChild(lbl);
+      barChart.appendChild(col);
+    });
+    div.appendChild(barChart);
+
+    // Delta
+    if (sessions.length >= 2) {
+      const first = maxWeights[0], last = maxWeights[maxWeights.length-1];
+      const delta = last - first;
+      const pct   = first > 0 ? ((delta/first)*100).toFixed(1) : '—';
+      const deltaEl = document.createElement('div');
+      deltaEl.className = 'text-sm';
+      deltaEl.style.marginBottom = '10px';
+      if (delta > 0) deltaEl.innerHTML = `<span style="color:var(--success)">▲ +${kgToDisplay(delta)} ${unitLabel()} (+${pct}%)</span>`;
+      else if (delta < 0) deltaEl.innerHTML = `<span style="color:var(--danger)">▼ ${kgToDisplay(delta)} ${unitLabel()} (${pct}%)</span>`;
+      else deltaEl.innerHTML = `<span style="color:var(--text2)">= Stesso peso dall'inizio</span>`;
+      div.appendChild(deltaEl);
+    }
+
+    // Ultime 5 sedute
+    const detLbl = document.createElement('div');
+    detLbl.className = 'text-sm text-muted';
+    detLbl.style.marginBottom = '6px';
+    detLbl.textContent = 'Ultime sedute:';
+    div.appendChild(detLbl);
+    sessions.slice(-5).reverse().forEach(sess => {
+      const se = sess.exercises.find(e => e.exerciseId === ex.id);
+      if (!se) return;
+      const row = document.createElement('div');
+      row.style.cssText = 'font-size:12px;color:var(--text2);display:flex;justify-content:space-between;padding:2px 0;';
+      const dateSpan = document.createElement('span');
+      dateSpan.textContent = formatDate(sess.date) + (sess.excludeFromProgress ? ' 🚫' : '');
+      const wSpan = document.createElement('span');
+      wSpan.textContent = se.sets.map((s,i) => s.weight !== null ? `S${i+1}:${kgToDisplay(s.weight)}` : `S${i+1}:—`).join(' ');
+      row.appendChild(dateSpan);
+      row.appendChild(wSpan);
+      div.appendChild(row);
+    });
+  }
+
+  div.appendChild(document.createElement('div')).className = 'divider';
+
+  // Controlli progressione
+  const ctrlGrid = document.createElement('div');
+  ctrlGrid.style.cssText = 'display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;';
+
+  // Progredisci ogni N
+  const everyWrap = document.createElement('div');
+  everyWrap.style.cssText = 'display:flex;flex-direction:column;gap:4px;flex:1;min-width:90px;';
+  const everyLbl = document.createElement('span');
+  everyLbl.className = 'text-xs text-muted';
+  everyLbl.textContent = 'Progredisci ogni';
+  const everyInp = document.createElement('input');
+  everyInp.type = 'number'; everyInp.min = '1'; everyInp.max = '20';
+  everyInp.value = every; everyInp.className = 'input-field';
+  everyInp.style.cssText = 'text-align:center;padding:8px;';
+  everyInp.setAttribute('inputmode', 'numeric');
+  everyInp.addEventListener('change', () => {
+    const v = parseInt(everyInp.value);
+    if (!isNaN(v) && v >= 1) { ex.progressEvery = v; saveStore(); checkProgressBanner(); renderStats(); }
+    else everyInp.value = every;
+  });
+  everyWrap.appendChild(everyLbl); everyWrap.appendChild(everyInp);
+  ctrlGrid.appendChild(everyWrap);
+
+  // Override giorno
+  if (inc > 0) {
+    const dayWrap = document.createElement('div');
+    dayWrap.style.cssText = 'display:flex;flex-direction:column;gap:4px;flex:1;min-width:90px;';
+    const dayLbl = document.createElement('span');
+    dayLbl.className = 'text-xs text-muted';
+    dayLbl.textContent = `Giorno (auto: ${autoDay})`;
+    const dayInp = document.createElement('input');
+    dayInp.type = 'number'; dayInp.min = '0'; dayInp.max = String(every);
+    dayInp.value = currentDay; dayInp.className = 'input-field';
+    dayInp.style.cssText = 'text-align:center;padding:8px;';
+    dayInp.setAttribute('inputmode', 'numeric');
+    dayInp.addEventListener('change', () => {
+      const v = parseInt(dayInp.value);
+      if (!isNaN(v) && v >= 0) { ex.progressCurrentDay = v; saveStore(); checkProgressBanner(); renderStats(); }
+      else dayInp.value = currentDay;
+    });
+    const resetBtn = document.createElement('button');
+    resetBtn.className = 'btn btn-ghost btn-sm';
+    resetBtn.style.cssText = 'font-size:10px;padding:3px 6px;margin-top:2px;';
+    resetBtn.textContent = '↺ Auto';
+    resetBtn.addEventListener('click', () => {
+      ex.progressCurrentDay = null; saveStore(); checkProgressBanner(); renderStats();
+    });
+    dayWrap.appendChild(dayLbl); dayWrap.appendChild(dayInp); dayWrap.appendChild(resetBtn);
+    ctrlGrid.appendChild(dayWrap);
+  }
+
+  div.appendChild(ctrlGrid);
+
+  // Incremento
+  const incWrap = document.createElement('div');
+  incWrap.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:10px;';
+  const incLbl = document.createElement('span');
+  incLbl.className = 'text-xs text-muted';
+  incLbl.style.flex = '1';
+  incLbl.textContent = `Incremento peso (+${unitLabel()}):`;
+  const incInp = document.createElement('input');
+  incInp.type = 'number'; incInp.min = '0'; incInp.step = '0.5';
+  incInp.value = inc; incInp.className = 'input-field';
+  incInp.style.cssText = 'width:80px;text-align:center;padding:8px;';
+  incInp.setAttribute('inputmode', 'decimal');
+  incInp.addEventListener('change', () => {
+    const v = parseFloat(incInp.value);
+    if (!isNaN(v) && v >= 0) { ex.increment = v; saveStore(); checkProgressBanner(); renderStats(); }
+    else incInp.value = inc;
+  });
+  incWrap.appendChild(incLbl); incWrap.appendChild(incInp);
+  div.appendChild(incWrap);
+
+  return div;
 }
 
 function findExercise(exId) {
@@ -3972,7 +4226,9 @@ function getMaxWeight(sess, exId) {
 }
 
 // Una sessione è "valida" (ha dati reali) se almeno una serie ha un peso o secondi inseriti
+// E non è stata esclusa manualmente dal conteggio progressione
 function isSessionValid(sess, exId) {
+  if (sess.excludeFromProgress) return false;
   const se = sess.exercises.find(e => e.exerciseId === exId);
   if (!se || !se.sets || !se.sets.length) return false;
   return se.sets.some(st => st.weight !== null || (st.reps != null && st.reps > 0));

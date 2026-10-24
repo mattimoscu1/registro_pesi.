@@ -549,10 +549,20 @@ select.input-field {
   justify-content: flex-start;
   padding: 32px 20px 40px;
   padding-top: calc(32px + env(safe-area-inset-top));
+  padding-bottom: calc(40px + env(safe-area-inset-bottom));
   background: var(--bg);
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
+.onboard-step {
+  display: none;
+  width: 100%;
+  max-width: 400px;
+  animation: fadeIn 0.25s ease;
+  /* Assicura che i pulsanti in fondo siano sempre visibili */
+  padding-bottom: 8px;
+}
+.onboard-step.active { display: block; }
 .onboard-logo {
   width: 80px; height: 80px;
   background: linear-gradient(135deg, var(--accent), var(--accent-light));
@@ -1560,8 +1570,10 @@ select.input-field {
         </label>
       </div>
     </div>
-    <button class="btn btn-secondary btn-full btn-sm mb-8" id="ob-step2-back" style="margin-bottom:8px;">← Indietro</button>
-    <button class="btn btn-primary btn-full btn-lg" id="ob-step2-next">Accetto e continuo →</button>
+    <div style="display:flex;flex-direction:column;gap:8px;padding-bottom:env(safe-area-inset-bottom);">
+      <button class="btn btn-secondary btn-full btn-sm" id="ob-step2-back">← Indietro</button>
+      <button class="btn btn-primary btn-full btn-lg" id="ob-step2-next">Accetto e continuo →</button>
+    </div>
   </div>
 
   <!-- Step 3: guida -->
@@ -1572,33 +1584,44 @@ select.input-field {
         <div class="onboard-guide-num">1</div>
         <div class="onboard-guide-text">
           <strong>Setup Giornate</strong>: crea i tuoi allenamenti, scegli i giorni
-          della settimana e inserisci gli esercizi con serie, ripetizioni e incremento di peso.
+          della settimana e inserisci gli esercizi con serie e ripetizioni.
         </div>
       </div>
       <div class="onboard-guide-item">
         <div class="onboard-guide-num">2</div>
         <div class="onboard-guide-text">
           <strong>Registro Pesi</strong>: ogni giorno trovi l'allenamento del giorno.
-          Inserisci il peso per ogni serie — l'app ricorda l'ultima seduta.
+          Inserisci il peso e le reps per ogni serie — l'app ricorda sempre l'ultima seduta.
         </div>
       </div>
       <div class="onboard-guide-item">
         <div class="onboard-guide-num">3</div>
         <div class="onboard-guide-text">
-          <strong>Statistiche</strong>: monitora i progressi, vedi i record personali
-          e ricevi suggerimenti su quando aumentare il peso.
+          <strong>Statistiche</strong>: vedi a che giorno di progressione sei per ogni
+          esercizio, i tuoi record personali e puoi assegnare un metodo di progressione
+          con colori personalizzati.
         </div>
       </div>
       <div class="onboard-guide-item">
         <div class="onboard-guide-num">4</div>
         <div class="onboard-guide-text">
-          <strong>Timer</strong>: usa il timer per i recuperi. Imposta i minuti
-          e avvialo — ti avviserà con suono e vibrazione.
+          <strong>Timer</strong>: usa il timer per i recuperi tra le serie.
+          Ti avvisa con suono e vibrazione a fine tempo.
+        </div>
+      </div>
+      <div class="onboard-guide-item">
+        <div class="onboard-guide-num">5</div>
+        <div class="onboard-guide-text">
+          <strong>Backup</strong>: vai nelle Impostazioni ed esporta regolarmente
+          il tuo profilo. I dati sono salvati solo sul dispositivo — un backup
+          ti protegge da perdite accidentali.
         </div>
       </div>
     </div>
-    <button class="btn btn-secondary btn-full btn-sm" id="ob-step3-back" style="margin-bottom:8px;">← Indietro</button>
-    <button class="btn btn-primary btn-full btn-lg" id="ob-step3-done">🚀 Inizia</button>
+    <div style="display:flex;flex-direction:column;gap:8px;padding-bottom:env(safe-area-inset-bottom);">
+      <button class="btn btn-secondary btn-full btn-sm" id="ob-step3-back">← Indietro</button>
+      <button class="btn btn-primary btn-full btn-lg" id="ob-step3-done">🚀 Inizia</button>
+    </div>
   </div>
 </div>
 
@@ -1765,7 +1788,7 @@ select.input-field {
 // ============================================================
 // COSTANTI
 // ============================================================
-const DATA_VERSION = 2;
+const DATA_VERSION = 3;
 const STORAGE_KEY  = 'registro_pesi_data';
 const DAYS_IT = ['Domenica','Lunedì','Martedì','Mercoledì','Giovedì','Venerdì','Sabato'];
 const DAYS_SHORT = ['Dom','Lun','Mar','Mer','Gio','Ven','Sab'];
@@ -2214,11 +2237,12 @@ function importProfile(file) {
         { label: 'Annulla', cls: 'btn-secondary' },
         { label: 'Importa', cls: 'btn-warn', action: () => {
           store = data;
-          // Assicura campi mancanti
+          // Assicura campi mancanti (retrocompatibilità)
           if (!store.prRecords) store.prRecords = {};
           if (!store.lastBackupReminder) store.lastBackupReminder = Date.now();
           if (!store.settings) store.settings = {};
-          // Migrazione v1 → v2: converti reps in repsMin/repsMax
+          if (!store.progressionPresets) store.progressionPresets = [];
+          // Migrazione v1/v2 → v3
           for (const wk of (store.workouts || [])) {
             for (const ex of (wk.exercises || [])) {
               if (ex.reps && !ex.repsMin) ex.repsMin = ex.reps;
@@ -2227,6 +2251,10 @@ function importProfile(file) {
               if (!ex.setupNote) ex.setupNote = '';
               if (ex.increment === undefined || ex.increment === null) ex.increment = 2.5;
               if (!ex.progressEvery) ex.progressEvery = 4;
+              if (!ex.progressionPresetId) ex.progressionPresetId = null;
+              if (ex.personalNote === undefined) ex.personalNote = null;
+              if (!ex.progressNote) ex.progressNote = '';
+              if (!ex.progressNoteDate) ex.progressNoteDate = null;
             }
           }
           store.version = DATA_VERSION;
@@ -3516,13 +3544,17 @@ function renderWorkoutCard(wk) {
     const newEx = {
       id: uid(),
       name: '',
-      type: 'normal', // 'normal' | 'static' (plank ecc.)
+      type: 'normal',
       sets: 3,
       repsMin: 8,
       repsMax: 12,
       increment: 2.5,
       progressEvery: 4,
-      setupNote: ''
+      setupNote: '',
+      progressionPresetId: null,
+      personalNote: null,
+      progressNote: '',
+      progressNoteDate: null
     };
     wk.exercises.push(newEx);
     saveStore();
@@ -3605,14 +3637,11 @@ function renderExerciseSetupRow(ex, wk) {
   if (!isStatic) {
     params.appendChild(makeParam('REPS MIN', 'repsMin', 1, 1));
     params.appendChild(makeParam('REPS MAX', 'repsMax', 1, 1));
-    params.appendChild(makeParam(`+KG`, 'increment', 0, 0.5));
   } else {
     // Statico: secondi min / secondi max
     params.appendChild(makeParam('SEC MIN', 'repsMin', 1, 5));
     params.appendChild(makeParam('SEC MAX', 'repsMax', 1, 5));
-    params.appendChild(makeParam(`+KG`, 'increment', 0, 0.5));
   }
-  params.appendChild(makeParam('PROG.', 'progressEvery', 1, 1));
   row.appendChild(params);
 
   // Toggle tipo esercizio (normale / statico)
@@ -4041,6 +4070,12 @@ function renderStats() {
   statHeader.textContent = '📈 Progressione';
   container.appendChild(statHeader);
 
+  // Spiegazione del numero di progressione
+  const progInfo = document.createElement('div');
+  progInfo.style.cssText = 'margin:0 8px 10px;padding:10px 12px;background:var(--bg3);border-radius:var(--radius-xs);font-size:12px;color:var(--text3);line-height:1.6;';
+  progInfo.textContent = 'Il numero accanto a ogni esercizio indica quante sedute consecutive hai già completato con lo stesso peso massimo. Più è alto, più sei vicino ad aumentare il carico. Il contatore si azzera automaticamente ogni volta che cambi peso.';
+  container.appendChild(progInfo);
+
   const statList = document.createElement('div');
   statList.className = 'stat-list';
 
@@ -4147,7 +4182,7 @@ function renderStats() {
 
   const noteInfo = document.createElement('div');
   noteInfo.style.cssText = 'margin:0 8px 10px;padding:10px 12px;background:var(--bg3);border-radius:var(--radius-xs);font-size:12px;color:var(--text3);line-height:1.5;';
-  noteInfo.textContent = 'Inserisci un numero per ogni esercizio come promemoria personale (es. il tuo obiettivo di sedute). Non influisce su nessun calcolo.';
+  noteInfo.textContent = 'Per promemoria personale inserisci qua ogni quanto progredire un esercizio.';
   container.appendChild(noteInfo);
 
   const noteList = document.createElement('div');
@@ -4286,6 +4321,52 @@ function renderStatExerciseDetail(ex, sessions, currentDay, autoDay, every, aler
       div.appendChild(row);
     });
   }
+
+  div.appendChild(document.createElement('div')).className = 'divider';
+
+  // === NOTA PERSONALE per questo esercizio (con data) ===
+  const noteSection = document.createElement('div');
+  noteSection.style.cssText = 'margin-top:12px;margin-bottom:12px;';
+
+  const noteSectionTitle = document.createElement('div');
+  noteSectionTitle.className = 'text-xs text-muted';
+  noteSectionTitle.style.cssText = 'font-weight:700;margin-bottom:6px;letter-spacing:0.5px;';
+  noteSectionTitle.textContent = 'NOTA PROGRESSIONE';
+  noteSection.appendChild(noteSectionTitle);
+
+  // Mostra nota esistente con data
+  if (ex.progressNote && ex.progressNote.trim()) {
+    const existingNote = document.createElement('div');
+    existingNote.style.cssText = 'background:var(--bg3);border-radius:var(--radius-xs);padding:8px 10px;font-size:13px;color:var(--text2);margin-bottom:6px;border-left:3px solid var(--accent);';
+    existingNote.textContent = ex.progressNote;
+    const noteDate = document.createElement('div');
+    noteDate.style.cssText = 'font-size:11px;color:var(--text3);margin-top:3px;';
+    noteDate.textContent = ex.progressNoteDate ? '📅 ' + formatDate(ex.progressNoteDate) : '';
+    existingNote.appendChild(noteDate);
+    noteSection.appendChild(existingNote);
+  }
+
+  // Campo per scrivere/modificare nota
+  const noteInput = document.createElement('textarea');
+  noteInput.className = 'input-field';
+  noteInput.style.cssText = 'height:60px;resize:none;font-size:13px;';
+  noteInput.placeholder = ex.progressNote ? 'Modifica nota…' : 'Aggiungi una nota per questo esercizio…';
+  noteInput.value = ex.progressNote || '';
+  const noteSaveBtn = document.createElement('button');
+  noteSaveBtn.className = 'btn btn-primary btn-sm btn-full';
+  noteSaveBtn.style.marginTop = '6px';
+  noteSaveBtn.textContent = '💾 Salva nota';
+  noteSaveBtn.addEventListener('click', () => {
+    const txt = noteInput.value.trim();
+    ex.progressNote = txt;
+    ex.progressNoteDate = txt ? Date.now() : null;
+    saveStore();
+    renderStats();
+    showToast('Nota salvata', 'success');
+  });
+  noteSection.appendChild(noteInput);
+  noteSection.appendChild(noteSaveBtn);
+  div.appendChild(noteSection);
 
   div.appendChild(document.createElement('div')).className = 'divider';
 

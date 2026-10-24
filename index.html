@@ -3954,6 +3954,12 @@ function renderStats() {
   statHeader.textContent = '📈 Progressione';
   container.appendChild(statHeader);
 
+  // Spiegazione contatore
+  const infoBox = document.createElement('div');
+  infoBox.style.cssText = 'margin:0 8px 10px;padding:10px 12px;background:var(--bg3);border-radius:var(--radius-xs);font-size:12px;color:var(--text3);line-height:1.5;';
+  infoBox.textContent = 'Il contatore conta le sedute consecutive con lo stesso peso massimo. Tocca un esercizio per il grafico. − [X/N] + per modificare il giorno, ↺ per tornare all\'automatico.';
+  container.appendChild(infoBox);
+
   const statList = document.createElement('div');
   statList.className = 'stat-list';
 
@@ -3983,29 +3989,97 @@ function renderStats() {
 
     const item = document.createElement('div');
     item.className = 'stat-list-item';
+    item.style.flexWrap = 'wrap';
+    item.style.gap = '8px';
     if (alert && !alert.almostReady) item.classList.add('warn-border');
 
     const name = document.createElement('span');
     name.className = 'stat-list-name';
     name.textContent = ex.name;
 
-    const dayLbl = document.createElement('span');
-    dayLbl.className = 'stat-list-day';
+    // Colonna destra: stepper giorno inline
+    const rightCol = document.createElement('div');
+    rightCol.style.cssText = 'display:flex;align-items:center;gap:6px;flex-shrink:0;';
 
-    if (inc === 0) {
-      dayLbl.textContent = '∞ nessuna prog.';
-    } else if (alert && !alert.almostReady) {
-      dayLbl.textContent = `� ${currentDay}/${every} — Aumenta!`;
-      dayLbl.classList.add('warn');
-    } else if (alert && alert.almostReady) {
-      dayLbl.textContent = `⏰ ${currentDay}/${every} — Manca 1`;
-      dayLbl.classList.add('almost');
+    if (inc !== 0) {
+      // Stepper  −  [X/N]  +  ↺
+      const stepper = document.createElement('div');
+      stepper.style.cssText = 'display:flex;align-items:center;gap:2px;';
+      stepper.addEventListener('click', e => e.stopPropagation());
+
+      const btnStyle = 'width:28px;height:28px;border-radius:6px;background:var(--bg3);border:1px solid var(--border);color:var(--text2);font-size:16px;cursor:pointer;line-height:1;display:flex;align-items:center;justify-content:center;';
+
+      const minBtn = document.createElement('button');
+      minBtn.style.cssText = btnStyle;
+      minBtn.textContent = '−';
+
+      const dayDisplay = document.createElement('div');
+      const dayColor = (alert && !alert.almostReady) ? 'var(--warn)' : (alert && alert.almostReady) ? 'var(--warn)' : 'var(--text)';
+      dayDisplay.style.cssText = `min-width:52px;height:28px;border-radius:6px;background:var(--bg3);border:1px solid var(--border);font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;color:${dayColor};cursor:pointer;`;
+      dayDisplay.textContent = `${currentDay}/${every}`;
+
+      // Tap sul display → input diretto
+      dayDisplay.addEventListener('click', () => {
+        const inp = document.createElement('input');
+        inp.type = 'number'; inp.min = '0'; inp.max = '99';
+        inp.value = currentDay;
+        inp.style.cssText = 'width:100%;height:100%;background:transparent;border:none;outline:none;text-align:center;font-size:13px;font-weight:700;color:inherit;font-family:inherit;';
+        inp.setAttribute('inputmode', 'numeric');
+        dayDisplay.textContent = '';
+        dayDisplay.appendChild(inp);
+        inp.focus(); inp.select();
+        const commit = () => {
+          const v = parseInt(inp.value);
+          if (!isNaN(v) && v >= 0) { ex.progressCurrentDay = v; saveStore(); checkProgressBanner(); renderStats(); }
+          else { dayDisplay.textContent = `${currentDay}/${every}`; }
+        };
+        inp.addEventListener('blur', commit);
+        inp.addEventListener('keydown', e => { if (e.key === 'Enter') inp.blur(); });
+      });
+
+      const plusBtn = document.createElement('button');
+      plusBtn.style.cssText = btnStyle;
+      plusBtn.textContent = '+';
+
+      const changeDay = delta => {
+        ex.progressCurrentDay = Math.max(0, currentDay + delta);
+        saveStore(); checkProgressBanner(); renderStats();
+      };
+      minBtn.addEventListener('click', e => { e.stopPropagation(); changeDay(-1); });
+      plusBtn.addEventListener('click', e => { e.stopPropagation(); changeDay(+1); });
+
+      const autoBtn = document.createElement('button');
+      autoBtn.style.cssText = 'width:28px;height:28px;border-radius:6px;background:var(--bg3);border:1px solid var(--border);color:var(--text3);font-size:12px;cursor:pointer;line-height:1;display:flex;align-items:center;justify-content:center;';
+      autoBtn.textContent = '↺';
+      autoBtn.title = 'Ripristina automatico';
+      autoBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        ex.progressCurrentDay = null;
+        saveStore(); checkProgressBanner(); renderStats();
+      });
+
+      stepper.appendChild(minBtn);
+      stepper.appendChild(dayDisplay);
+      stepper.appendChild(plusBtn);
+      stepper.appendChild(autoBtn);
+      rightCol.appendChild(stepper);
+
+      // Badge stato
+      if (alert) {
+        const stateLbl = document.createElement('span');
+        stateLbl.style.cssText = 'font-size:10px;font-weight:700;white-space:nowrap;color:var(--warn);';
+        stateLbl.textContent = alert.almostReady ? '⏰ −1' : '🔥 Sali!';
+        rightCol.appendChild(stateLbl);
+      }
     } else {
-      dayLbl.textContent = `${currentDay}/${every}`;
+      const dayLbl = document.createElement('span');
+      dayLbl.className = 'stat-list-day';
+      dayLbl.textContent = '∞';
+      rightCol.appendChild(dayLbl);
     }
 
     item.appendChild(name);
-    item.appendChild(dayLbl);
+    item.appendChild(rightCol);
 
     // Click → apre dettaglio esercizio (card espandibile)
     item.addEventListener('click', () => {
